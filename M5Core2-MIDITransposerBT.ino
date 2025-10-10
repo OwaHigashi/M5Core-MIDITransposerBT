@@ -24,7 +24,8 @@ static const uint8_t PEDAL_RIGHT_KEY = 0x51; // HID keyboard Down Arrow
 enum DisplayMode {
   DIRECT_MODE,
   KEY_MODE,
-  RELATIVE_MODE
+  RELATIVE_MODE,
+  PRESET_MODE
 };
 
 // 転調範囲モード（3種類に拡張）
@@ -74,6 +75,27 @@ const unsigned long BUTTON_DEBOUNCE = 200;
 
 // タッチ入力のラッチ（押しっぱなし連続反応を抑止）
 bool touchWasActive = false;
+
+// Preset Mode用の設定
+#define PRESET_SLOT_COUNT 6
+int8_t presetTransposeValues[PRESET_SLOT_COUNT] = {0, 0, 0, 0, 0, 0}; // 初期値
+int presetCursorPos = 0; // 初期カーソル位置（0から5の範囲）
+
+struct PresetSlot {
+  int slotX, slotY, slotW, slotH;  // スロット表示領域
+  int upBtnX, upBtnY, upBtnW, upBtnH;  // 上ボタン
+  int downBtnX, downBtnY, downBtnW, downBtnH;  // 下ボタン
+};
+
+PresetSlot presetSlots[PRESET_SLOT_COUNT];
+
+// プリセットモード用の左右移動ボタン
+struct PresetNavButton {
+  int x, y, w, h;
+};
+
+PresetNavButton presetLeftBtn;
+PresetNavButton presetRightBtn;
 
 // Bluetooth HID foot pedal state management
 static portMUX_TYPE g_keyStateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -170,6 +192,7 @@ void setup() {
   initDirectModeButtons();
   initKeyModeButtons();
   initRelativeModeButtons();
+  initPresetModeButtons();
   
   // 最初の転調値0のボタンを確実に光らせる（-5から+6レンジでは5番目のボタン）
   transposeButtons[5] = true;  // RANGE_MINUS5_TO_6の場合、ボタン5が転調値0
@@ -372,29 +395,74 @@ void initKeyModeButtons() {
 void initRelativeModeButtons() {
   static const int8_t deltas[8] = {-5, -3, -2, -1, +1, +2, +3, +5};
   static char labels[8][4];
-  
-  int buttonWidth = 75;   
+
+  int buttonWidth = 75;
   int buttonHeight = 52;
   int startX = 10;
-  int startY = 130;  
+  int startY = 130;
   int spacingX = 5;
   int spacingY = 5;
   int buttonsPerRow = 4;
-  
+
   for (int i = 0; i < 8; i++) {
     int row = i / buttonsPerRow;
     int col = i % buttonsPerRow;
-    
+
     relativeButtons[i].x = startX + col * (buttonWidth + spacingX);
     relativeButtons[i].y = startY + row * (buttonHeight + spacingY);
     relativeButtons[i].w = buttonWidth;
     relativeButtons[i].h = buttonHeight;
     relativeButtons[i].value = deltas[i];
-    
+
     if (deltas[i] > 0) sprintf(labels[i], "+%d", deltas[i]);
     else sprintf(labels[i], "%d", deltas[i]);
     relativeButtons[i].label = labels[i];
   }
+}
+
+// プリセットモードのボタン配置（6つのスロット）
+void initPresetModeButtons() {
+  int slotWidth = 48;
+  int slotSpacing = 5;
+  int startX = 5;
+
+  int buttonH = 45;     // 上下ボタンとスロットをすべて同じ高さに
+  int upBtnY = 55;
+  int slotY = 105;      // 上ボタンの下に配置
+  int downBtnY = 155;   // スロットの下に配置
+
+  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
+    int x = startX + i * (slotWidth + slotSpacing);
+
+    presetSlots[i].slotX = x;
+    presetSlots[i].slotY = slotY;
+    presetSlots[i].slotW = slotWidth;
+    presetSlots[i].slotH = buttonH;
+
+    presetSlots[i].upBtnX = x;
+    presetSlots[i].upBtnY = upBtnY;
+    presetSlots[i].upBtnW = slotWidth;
+    presetSlots[i].upBtnH = buttonH;
+
+    presetSlots[i].downBtnX = x;
+    presetSlots[i].downBtnY = downBtnY;
+    presetSlots[i].downBtnW = slotWidth;
+    presetSlots[i].downBtnH = buttonH;
+  }
+
+  // 左右移動ボタンの配置
+  int navBtnY = 205;
+  int navBtnW = 80;
+  int navBtnH = 35;
+  presetLeftBtn.x = 10;
+  presetLeftBtn.y = navBtnY;
+  presetLeftBtn.w = navBtnW;
+  presetLeftBtn.h = navBtnH;
+
+  presetRightBtn.x = 230;
+  presetRightBtn.y = navBtnY;
+  presetRightBtn.w = navBtnW;
+  presetRightBtn.h = navBtnH;
 }
 
 void drawInterface() {
@@ -422,8 +490,10 @@ void drawInterface() {
     drawDirectMode();
   } else if (currentMode == KEY_MODE) {
     drawKeyMode();
-  } else {
+  } else if (currentMode == RELATIVE_MODE) {
     drawRelativeMode();
+  } else {
+    drawPresetMode();
   }
   
   updateStatusArea();
@@ -599,6 +669,87 @@ void drawRelativeMode() {
   }
 }
 
+// プリセットモード描画
+void drawPresetMode() {
+  // 6つのスロットを描画
+  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
+    bool isCurrent = (i == presetCursorPos);
+
+    // 上ボタン
+    uint16_t upBtnColor = DARKGREY;
+    M5.Lcd.fillRect(presetSlots[i].upBtnX, presetSlots[i].upBtnY,
+                    presetSlots[i].upBtnW, presetSlots[i].upBtnH, upBtnColor);
+    M5.Lcd.drawRect(presetSlots[i].upBtnX, presetSlots[i].upBtnY,
+                    presetSlots[i].upBtnW, presetSlots[i].upBtnH, WHITE);
+
+    // 上ボタンに三角形を描画（▲）
+    int centerX = presetSlots[i].upBtnX + presetSlots[i].upBtnW / 2;
+    int centerY = presetSlots[i].upBtnY + presetSlots[i].upBtnH / 2;
+    int triSize = 12;
+    M5.Lcd.fillTriangle(
+      centerX, centerY - triSize,           // 上の頂点
+      centerX - triSize, centerY + triSize, // 左下
+      centerX + triSize, centerY + triSize, // 右下
+      WHITE
+    );
+
+    // スロット（転調値表示）
+    uint16_t slotColor = isCurrent ? GREEN : DARKGREY;
+    uint16_t slotTextColor = isCurrent ? BLACK : WHITE;
+    M5.Lcd.fillRect(presetSlots[i].slotX, presetSlots[i].slotY,
+                    presetSlots[i].slotW, presetSlots[i].slotH, slotColor);
+    M5.Lcd.drawRect(presetSlots[i].slotX, presetSlots[i].slotY,
+                    presetSlots[i].slotW, presetSlots[i].slotH, WHITE);
+
+    // 転調値を表示
+    char valueStr[5];
+    int8_t value = presetTransposeValues[i];
+    if (value > 0) sprintf(valueStr, "+%d", value);
+    else sprintf(valueStr, "%d", value);
+
+    M5.Lcd.setTextColor(slotTextColor);
+    M5.Lcd.setTextSize(3);
+    int valueX = presetSlots[i].slotX + (presetSlots[i].slotW - strlen(valueStr) * 18) / 2;
+    int valueY = presetSlots[i].slotY + (presetSlots[i].slotH - 24) / 2;
+    M5.Lcd.setCursor(valueX, valueY);
+    M5.Lcd.print(valueStr);
+
+    // 下ボタン
+    uint16_t downBtnColor = DARKGREY;
+    M5.Lcd.fillRect(presetSlots[i].downBtnX, presetSlots[i].downBtnY,
+                    presetSlots[i].downBtnW, presetSlots[i].downBtnH, downBtnColor);
+    M5.Lcd.drawRect(presetSlots[i].downBtnX, presetSlots[i].downBtnY,
+                    presetSlots[i].downBtnW, presetSlots[i].downBtnH, WHITE);
+
+    // 下ボタンに三角形を描画（▼）
+    centerX = presetSlots[i].downBtnX + presetSlots[i].downBtnW / 2;
+    centerY = presetSlots[i].downBtnY + presetSlots[i].downBtnH / 2;
+    M5.Lcd.fillTriangle(
+      centerX, centerY + triSize,           // 下の頂点
+      centerX - triSize, centerY - triSize, // 左上
+      centerX + triSize, centerY - triSize, // 右上
+      WHITE
+    );
+  }
+
+  // 左右移動ボタンを描画
+  // 左ボタン
+  M5.Lcd.fillRect(presetLeftBtn.x, presetLeftBtn.y, presetLeftBtn.w, presetLeftBtn.h, BLUE);
+  M5.Lcd.drawRect(presetLeftBtn.x, presetLeftBtn.y, presetLeftBtn.w, presetLeftBtn.h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(3);
+  M5.Lcd.setCursor(presetLeftBtn.x + (presetLeftBtn.w - 18) / 2, presetLeftBtn.y + (presetLeftBtn.h - 24) / 2);
+  M5.Lcd.print("<");
+
+  // 右ボタン
+  M5.Lcd.fillRect(presetRightBtn.x, presetRightBtn.y, presetRightBtn.w, presetRightBtn.h, BLUE);
+  M5.Lcd.drawRect(presetRightBtn.x, presetRightBtn.y, presetRightBtn.w, presetRightBtn.h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(3);
+  M5.Lcd.setCursor(presetRightBtn.x + (presetRightBtn.w - 18) / 2, presetRightBtn.y + (presetRightBtn.h - 24) / 2);
+  M5.Lcd.print(">");
+}
+
 void updateStatusArea() {
   // 右上のステータス表示エリア（x座標を右にずらす）
   M5.Lcd.fillRect(200, 10, 115, 30, BLACK);  // x座標を155→200に変更、幅を165→115に調整
@@ -655,88 +806,106 @@ void processFootPedal() {
                   leftJustPressed ? "PRESSED" : "released",
                   rightJustPressed ? "PRESSED" : "released");
 
-    // 各モードとレンジに応じた転調値配列を取得
-    int8_t* transposeValues = nullptr;
-    int numValues = 0;
-    int8_t values[12];
-
-    if (currentMode == DIRECT_MODE) {
-      // DirectModeの転調値配列を作成
-      for (int i = 0; i < 12; i++) {
-        values[i] = directButtons[i].value;
+    if (currentMode == PRESET_MODE) {
+      // PRESET_MODE: ペダルでカーソルを左右に移動
+      if (leftJustPressed) {
+        // 左ペダル: カーソルを左に移動
+        presetCursorPos = (presetCursorPos > 0) ? presetCursorPos - 1 : PRESET_SLOT_COUNT - 1;
+        handleTransposeChange(presetTransposeValues[presetCursorPos]);
+        needFullRedraw = true;
+        Serial.printf("Preset Mode (Pedal): Cursor moved to slot %d\n", presetCursorPos);
+      } else if (rightJustPressed) {
+        // 右ペダル: カーソルを右に移動
+        presetCursorPos = (presetCursorPos < PRESET_SLOT_COUNT - 1) ? presetCursorPos + 1 : 0;
+        handleTransposeChange(presetTransposeValues[presetCursorPos]);
+        needFullRedraw = true;
+        Serial.printf("Preset Mode (Pedal): Cursor moved to slot %d\n", presetCursorPos);
       }
-      transposeValues = values;
-      numValues = 12;
-    } else if (currentMode == KEY_MODE) {
-      // KeyModeでは現在の設定に応じた転調値範囲を使用
-      if (majorUpperTranspose || minorUpperTranspose) {
-        // 上位/下位転調の場合は広い範囲
+    } else {
+      // 他のモード: 従来の転調値選択処理
+      // 各モードとレンジに応じた転調値配列を取得
+      int8_t* transposeValues = nullptr;
+      int numValues = 0;
+      int8_t values[12];
+
+      if (currentMode == DIRECT_MODE) {
+        // DirectModeの転調値配列を作成
         for (int i = 0; i < 12; i++) {
-          values[i] = i - 11; // -11 to 0 or similar range
+          values[i] = directButtons[i].value;
         }
-      } else {
-        // 通常転調の場合
+        transposeValues = values;
+        numValues = 12;
+      } else if (currentMode == KEY_MODE) {
+        // KeyModeでは現在の設定に応じた転調値範囲を使用
+        if (majorUpperTranspose || minorUpperTranspose) {
+          // 上位/下位転調の場合は広い範囲
+          for (int i = 0; i < 12; i++) {
+            values[i] = i - 11; // -11 to 0 or similar range
+          }
+        } else {
+          // 通常転調の場合
+          for (int i = 0; i < 12; i++) {
+            values[i] = i - 5; // -5 to +6
+          }
+        }
+        transposeValues = values;
+        numValues = 12;
+      } else { // RELATIVE_MODE
+        // 相対モードでは-5から+6の範囲を使用
         for (int i = 0; i < 12; i++) {
           values[i] = i - 5; // -5 to +6
         }
+        transposeValues = values;
+        numValues = 12;
       }
-      transposeValues = values;
-      numValues = 12;
-    } else { // RELATIVE_MODE
-      // 相対モードでは-5から+6の範囲を使用
-      for (int i = 0; i < 12; i++) {
-        values[i] = i - 5; // -5 to +6
+
+      // 現在の転調値のインデックスを見つける
+      int currentIndex = -1;
+      for (int i = 0; i < numValues; i++) {
+        if (transposeValues[i] == transposeValue) {
+          currentIndex = i;
+          break;
+        }
       }
-      transposeValues = values;
-      numValues = 12;
-    }
 
-    // 現在の転調値のインデックスを見つける
-    int currentIndex = -1;
-    for (int i = 0; i < numValues; i++) {
-      if (transposeValues[i] == transposeValue) {
-        currentIndex = i;
-        break;
+      if (currentIndex == -1) {
+        // 現在の転調値が配列にない場合は、最も近い値を選択
+        currentIndex = 5; // デフォルト（通常は0に近い値）
       }
-    }
 
-    if (currentIndex == -1) {
-      // 現在の転調値が配列にない場合は、最も近い値を選択
-      currentIndex = 5; // デフォルト（通常は0に近い値）
-    }
+      // フットスイッチに基づいて転調値をシフト
+      int newIndex = currentIndex;
+      if (leftJustPressed) {
+        // 上ボタン：減る方向（インデックスを減らす）
+        newIndex = (currentIndex > 0) ? currentIndex - 1 : numValues - 1;
+      } else if (rightJustPressed) {
+        // 下ボタン：増える方向（インデックスを増やす）
+        newIndex = (currentIndex < numValues - 1) ? currentIndex + 1 : 0;
+      }
 
-    // フットスイッチに基づいて転調値をシフト
-    int newIndex = currentIndex;
-    if (leftJustPressed) {
-      // 上ボタン：減る方向（インデックスを減らす）
-      newIndex = (currentIndex > 0) ? currentIndex - 1 : numValues - 1;
-    } else if (rightJustPressed) {
-      // 下ボタン：増える方向（インデックスを増やす）
-      newIndex = (currentIndex < numValues - 1) ? currentIndex + 1 : 0;
-    }
+      int8_t newTransposeValue = transposeValues[newIndex];
 
-    int8_t newTransposeValue = transposeValues[newIndex];
+      Serial.printf("Transpose change: %d -> %d (index %d -> %d)\n",
+                    transposeValue, newTransposeValue, currentIndex, newIndex);
 
-    Serial.printf("Transpose change: %d -> %d (index %d -> %d)\n",
-                  transposeValue, newTransposeValue, currentIndex, newIndex);
+      // 転調値を更新
+      handleTransposeChange(newTransposeValue);
 
-    // 転調値を更新
-    handleTransposeChange(newTransposeValue);
-
-    // 対応するUIの更新
-    if (currentMode == DIRECT_MODE) {
-      // DirectModeの場合、対応するボタンを光らせる
-      for (int j = 0; j < 12; j++) transposeButtons[j] = false;
-      transposeButtons[newIndex] = true;
-      needFullRedraw = true;
-    } else if (currentMode == KEY_MODE) {
-      // KeyModeの場合、選択状態をリセット（新しい転調値に基づいて自動選択される）
-      selectedMajorKey = -1;
-      selectedMinorKey = -1;
-      needFullRedraw = true;
-    } else {
-      // RelativeModeの場合、画面を更新
-      needFullRedraw = true;
+      // 対応するUIの更新
+      if (currentMode == DIRECT_MODE) {
+        // DirectModeの場合、対応するボタンを光らせる
+        for (int j = 0; j < 12; j++) transposeButtons[j] = false;
+        transposeButtons[newIndex] = true;
+        needFullRedraw = true;
+      } else if (currentMode == KEY_MODE) {
+        // KeyModeの場合、選択状態をリセット（新しい転調値に基づいて自動選択される）
+        selectedMajorKey = -1;
+        selectedMinorKey = -1;
+        needFullRedraw = true;
+      } else {
+        // RelativeModeの場合、画面を更新
+        needFullRedraw = true;
+      }
     }
   }
 }
@@ -744,15 +913,15 @@ void processFootPedal() {
 void processHardwareButtons() {
   unsigned long now = millis();
   if (now - lastButtonCheck < BUTTON_DEBOUNCE) return;
-  
+
   // 左ボタン（A）: All Notes Off切り替え
   if (M5.BtnA.wasPressed()) {
     allNotesOffEnabled = !allNotesOffEnabled;
-    needFullRedraw = true;  // needPartialUpdate→needFullRedrawに変更
+    needFullRedraw = true;
     lastButtonCheck = now;
     Serial.printf("All Notes Off: %s\n", allNotesOffEnabled ? "ON" : "OFF");
   }
-  
+
   // 真ん中ボタン（B）
   if (M5.BtnB.wasPressed()) {
     if (currentMode == DIRECT_MODE) {
@@ -775,21 +944,22 @@ void processHardwareButtons() {
       selectedMinorKey = -1;
       needFullRedraw = true;
     } else {
-      // RELATIVE_MODE: 何もしない
+      // RELATIVE_MODE, PRESET_MODE: 何もしない
     }
     lastButtonCheck = now;
     Serial.println("Range/Mode toggled (B)");
   }
-  
-  // 右ボタン（C）: モード切り替え（DIRECT→KEY→RELATIVE→…）
+
+  // 右ボタン（C）: モード切り替え（DIRECT→KEY→RELATIVE→PRESET→…）
   if (M5.BtnC.wasPressed()) {
     sendAllNotesOff();
     delay(10);
-    
+
     if (currentMode == DIRECT_MODE) currentMode = KEY_MODE;
     else if (currentMode == KEY_MODE) currentMode = RELATIVE_MODE;
+    else if (currentMode == RELATIVE_MODE) currentMode = PRESET_MODE;
     else currentMode = DIRECT_MODE;
-    
+
     if (currentMode == DIRECT_MODE) {
       setCurrentTransposeButton();  // 現在の転調値に対応するボタンを光らせる
       Serial.println("DirectMode: Current transpose button selected");
@@ -797,16 +967,21 @@ void processHardwareButtons() {
       selectedMajorKey = -1;
       selectedMinorKey = -1;
       Serial.println("KeyMode: All keys deselected");
-    } else {
+    } else if (currentMode == RELATIVE_MODE) {
       // 相対モード：特に選択状態は持たない
       Serial.println("RelativeMode entered");
+    } else {
+      // プリセットモード：カーソル位置の転調値を適用
+      handleTransposeChange(presetTransposeValues[presetCursorPos]);
+      Serial.println("PresetMode entered");
     }
-    
+
     needFullRedraw = true;
     lastButtonCheck = now;
-    Serial.printf("Mode: %s, Transpose: %d (maintained)\n", 
+    Serial.printf("Mode: %s, Transpose: %d (maintained)\n",
                   currentMode == DIRECT_MODE ? "DIRECT" :
-                  (currentMode == KEY_MODE ? "KEY" : "RELATIVE"),
+                  (currentMode == KEY_MODE ? "KEY" :
+                  (currentMode == RELATIVE_MODE ? "RELATIVE" : "PRESET")),
                   transposeValue);
   }
 }
@@ -879,8 +1054,10 @@ void processTouch() {
     processDirectModeTouch(pos);
   } else if (currentMode == KEY_MODE) {
     processKeyModeTouch(pos);
-  } else {
+  } else if (currentMode == RELATIVE_MODE) {
     processRelativeModeTouch(pos);
+  } else {
+    processPresetModeTouch(pos);
   }
 }
 
@@ -967,6 +1144,68 @@ void processRelativeModeTouch(TouchPoint_t pos) {
         pos.y >= relativeButtons[i].y && pos.y <= relativeButtons[i].y + relativeButtons[i].h) {
       int8_t delta = relativeButtons[i].value;
       handleTransposeChange(transposeValue + delta); // クランプは内側で実施
+      needFullRedraw = true;
+      return;
+    }
+  }
+}
+
+// プリセットモードのタッチ処理
+void processPresetModeTouch(TouchPoint_t pos) {
+  // 左ボタンのタッチ検出
+  if (pos.x >= presetLeftBtn.x && pos.x <= presetLeftBtn.x + presetLeftBtn.w &&
+      pos.y >= presetLeftBtn.y && pos.y <= presetLeftBtn.y + presetLeftBtn.h) {
+    // カーソルを左に移動
+    presetCursorPos = (presetCursorPos > 0) ? presetCursorPos - 1 : PRESET_SLOT_COUNT - 1;
+    handleTransposeChange(presetTransposeValues[presetCursorPos]);
+    needFullRedraw = true;
+    return;
+  }
+
+  // 右ボタンのタッチ検出
+  if (pos.x >= presetRightBtn.x && pos.x <= presetRightBtn.x + presetRightBtn.w &&
+      pos.y >= presetRightBtn.y && pos.y <= presetRightBtn.y + presetRightBtn.h) {
+    // カーソルを右に移動
+    presetCursorPos = (presetCursorPos < PRESET_SLOT_COUNT - 1) ? presetCursorPos + 1 : 0;
+    handleTransposeChange(presetTransposeValues[presetCursorPos]);
+    needFullRedraw = true;
+    return;
+  }
+
+  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
+    // 上ボタンのタッチ検出
+    if (pos.x >= presetSlots[i].upBtnX && pos.x <= presetSlots[i].upBtnX + presetSlots[i].upBtnW &&
+        pos.y >= presetSlots[i].upBtnY && pos.y <= presetSlots[i].upBtnY + presetSlots[i].upBtnH) {
+      // 転調値を増やす
+      presetTransposeValues[i] = clampTranspose(presetTransposeValues[i] + 1);
+      // カーソルをこのスロットに移動
+      presetCursorPos = i;
+      // 転調値を適用
+      handleTransposeChange(presetTransposeValues[i]);
+      needFullRedraw = true;
+      return;
+    }
+
+    // 下ボタンのタッチ検出
+    if (pos.x >= presetSlots[i].downBtnX && pos.x <= presetSlots[i].downBtnX + presetSlots[i].downBtnW &&
+        pos.y >= presetSlots[i].downBtnY && pos.y <= presetSlots[i].downBtnY + presetSlots[i].downBtnH) {
+      // 転調値を減らす
+      presetTransposeValues[i] = clampTranspose(presetTransposeValues[i] - 1);
+      // カーソルをこのスロットに移動
+      presetCursorPos = i;
+      // 転調値を適用
+      handleTransposeChange(presetTransposeValues[i]);
+      needFullRedraw = true;
+      return;
+    }
+
+    // スロット自体のタッチ検出（カーソル移動と転調値適用）
+    if (pos.x >= presetSlots[i].slotX && pos.x <= presetSlots[i].slotX + presetSlots[i].slotW &&
+        pos.y >= presetSlots[i].slotY && pos.y <= presetSlots[i].slotY + presetSlots[i].slotH) {
+      // カーソルをこのスロットに移動
+      presetCursorPos = i;
+      // 転調値を適用
+      handleTransposeChange(presetTransposeValues[i]);
       needFullRedraw = true;
       return;
     }
