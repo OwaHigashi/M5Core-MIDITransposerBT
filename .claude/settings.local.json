@@ -4,7 +4,8 @@
       "Bash(arduino-cli:*)",
       "Bash(git mv:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nAdd preset mode with 6 customizable transpose slots\n\n- Add PRESET_MODE as 4th display mode with 6 preset slots\n- Each slot stores a transpose value (-12 to +12) adjustable via up/down buttons\n- Add on-screen left/right navigation buttons for cursor movement\n- Implement triangle icons (▲/▼) for up/down buttons\n- Unify button heights (45px) for consistent layout\n- Add pedal support for left/right slot navigation in preset mode\n- Initialize all preset slots to 0\n- Maintain AllNotesOff on button A across all modes\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd preset mode with 6 customizable transpose slots\n\n- Add PRESET_MODE as 4th display mode with 6 preset slots\n- Each slot stores a transpose value (-12 to +12) adjustable via up/down buttons\n- Add on-screen left/right navigation buttons for cursor movement\n- Implement triangle icons (▲/▼) for up/down buttons\n- Unify button heights (45px) for consistent layout\n- Add pedal support for left/right slot navigation in preset mode\n- Initialize all preset slots to 0\n- Maintain AllNotesOff on button A across all modes\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
