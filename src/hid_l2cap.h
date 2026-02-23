@@ -24,5 +24,6 @@ long hid_l2cap_initialize(HID_L2CAP_CALLBACK callback);
 long hid_l2cap_connect(BD_ADDR addr);
 long hid_l2cap_reconnect(void);
 BT_STATUS hid_l2cap_is_connected(void);
+bool hid_l2cap_auth_completed(void);
 
 #endif

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <esp_bt_main.h>
 #include "esp32-hal-bt.h"
+#include "esp_gap_bt_api.h"
 
 #include "stack/l2c_api.h"
 #include "osi/allocator.h"
@@ -26,6 +27,54 @@ static void dump_bin(const char *p_message, const uint8_t *p_bin, int len);
 static BT_STATUS is_connected = BT_UNINITIALIZED;
 static BD_ADDR g_bd_addr;
 static HID_L2CAP_CALLBACK g_callback;
+static volatile bool g_auth_completed = false;
+
+// GAP callback for handling SSP (Secure Simple Pairing) events
+static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
+{
+  switch (event) {
+    case ESP_BT_GAP_AUTH_CMPL_EVT:
+      Serial.printf("[BT_GAP] AUTH_CMPL: stat=%d, name=%s\n",
+                    param->auth_cmpl.stat, param->auth_cmpl.device_name);
+      if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+        g_auth_completed = true;
+        Serial.println("[BT_GAP] Authentication successful - bond info should be in NVS");
+      } else {
+        Serial.println("[BT_GAP] Authentication failed");
+      }
+      break;
+
+    case ESP_BT_GAP_PIN_REQ_EVT:
+      Serial.println("[BT_GAP] PIN_REQ - replying with 0000");
+      {
+        esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
+        esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin);
+      }
+      break;
+
+    case ESP_BT_GAP_CFM_REQ_EVT:
+      Serial.printf("[BT_GAP] CFM_REQ: num_val=%d - auto confirming\n",
+                    param->cfm_req.num_val);
+      esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+      break;
+
+    case ESP_BT_GAP_KEY_NOTIF_EVT:
+      Serial.printf("[BT_GAP] KEY_NOTIF: passkey=%d\n", param->key_notif.passkey);
+      break;
+
+    case ESP_BT_GAP_KEY_REQ_EVT:
+      Serial.println("[BT_GAP] KEY_REQ");
+      break;
+
+    case ESP_BT_GAP_MODE_CHG_EVT:
+      Serial.printf("[BT_GAP] MODE_CHG: mode=%d\n", param->mode_chg.mode);
+      break;
+
+    default:
+      Serial.printf("[BT_GAP] event=%d\n", event);
+      break;
+  }
+}
 
 static uint16_t l2cap_cid_hidc;
 static uint16_t l2cap_cid_hidi;
@@ -82,6 +131,15 @@ BT_STATUS hid_l2cap_is_connected(void)
   return is_connected;
 }
 
+bool hid_l2cap_auth_completed(void)
+{
+  if (g_auth_completed) {
+    g_auth_completed = false;
+    return true;
+  }
+  return false;
+}
+
 long hid_l2cap_reconnect(void)
 {
   long ret;
@@ -126,6 +184,22 @@ long hid_l2cap_initialize(HID_L2CAP_CALLBACK callback)
         return -1;
       }
   }
+
+  // Register GAP callback for SSP (Secure Simple Pairing) handling
+  if (esp_bt_gap_register_callback(bt_gap_cb) != ESP_OK) {
+    Serial.println("esp_bt_gap_register_callback failed");
+    return -1;
+  }
+
+  // Set IO capability to NoInputNoOutput for "Just Works" pairing
+  esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+  esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(uint8_t));
+
+  // Set fixed PIN for legacy pairing compatibility
+  esp_bt_pin_code_t pin_code = {'0', '0', '0', '0'};
+  esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
+
+  Serial.println("[BT] GAP callback registered, SSP configured");
 
   if( hid_l2cap_init_services() != 0 ){
     Serial.println("hid_l2cap_init_services failed");
@@ -178,7 +252,8 @@ static void hid_l2cap_disconnect_ind_cback(uint16_t l2cap_cid, bool ack_needed)
 {
     Serial.printf("[%s] l2cap_cid: 0x%02x\n  ack_needed: %d\n", __func__, l2cap_cid, ack_needed );
     is_connected = BT_DISCONNECTED;
-    g_callback = NULL;
+    // Note: g_callback is intentionally NOT cleared here.
+    // Clearing it would cause key presses to be ignored after reconnection.
 }
 
 static void hid_l2cap_disconnect_cfm_cback(uint16_t l2cap_cid, uint16_t result)

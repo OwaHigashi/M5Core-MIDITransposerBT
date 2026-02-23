@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 #include "src/hid_l2cap.h"
 
@@ -16,6 +18,13 @@
 static const uint8_t PEDAL_LEFT_KEY  = 0x52; // HID keyboard Up Arrow
 static const uint8_t PEDAL_RIGHT_KEY = 0x51; // HID keyboard Down Arrow
 
+// SD card bond persistence settings
+#define BT_BOND_FILE        "/bt_bond.dat"
+#define NVS_BT_NAMESPACE    "bt_config.conf"
+#define NVS_BT_KEY_PREFIX   "bt_cfg_key"
+#define NVS_BT_MAX_SIZE     4096
+#define NVS_BT_CHUNK_SIZE   1984
+
 // 画面サイズ
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -25,7 +34,7 @@ enum DisplayMode {
   DIRECT_MODE,
   KEY_MODE,
   RELATIVE_MODE,
-  PRESET_MODE
+  SEQUENCE_MODE
 };
 
 // 転調範囲モード（3種類に拡張）
@@ -76,26 +85,30 @@ const unsigned long BUTTON_DEBOUNCE = 200;
 // タッチ入力のラッチ（押しっぱなし連続反応を抑止）
 bool touchWasActive = false;
 
-// Preset Mode用の設定
-#define PRESET_SLOT_COUNT 6
-int8_t presetTransposeValues[PRESET_SLOT_COUNT] = {0, 0, 0, 0, 0, 0}; // 初期値
-int presetCursorPos = 0; // 初期カーソル位置（0から5の範囲）
-
-struct PresetSlot {
-  int slotX, slotY, slotW, slotH;  // スロット表示領域
-  int upBtnX, upBtnY, upBtnW, upBtnH;  // 上ボタン
-  int downBtnX, downBtnY, downBtnW, downBtnH;  // 下ボタン
-};
-
-PresetSlot presetSlots[PRESET_SLOT_COUNT];
-
-// プリセットモード用の左右移動ボタン
-struct PresetNavButton {
+// 汎用ナビゲーションボタン構造体
+struct NavButton {
   int x, y, w, h;
 };
 
-PresetNavButton presetLeftBtn;
-PresetNavButton presetRightBtn;
+// Sequence Mode用の設定
+#define SEQ_PATTERN_COUNT 16
+#define SEQ_STEP_COUNT    6
+#define SEQ_FILE          "/seq_data.dat"
+
+int8_t seqPatterns[SEQ_PATTERN_COUNT][SEQ_STEP_COUNT]; // 16パターン x 6ステップ
+int seqCurrentPattern = 0;  // 0-15
+int seqCurrentStep = 0;     // 0-5
+
+struct SeqStepSlot {
+  int slotX, slotY, slotW, slotH;
+  int upBtnX, upBtnY, upBtnW, upBtnH;
+  int downBtnX, downBtnY, downBtnW, downBtnH;
+};
+
+SeqStepSlot seqSteps[SEQ_STEP_COUNT];
+NavButton seqPatLeftBtn, seqPatRightBtn;
+NavButton seqStepLeftBtn, seqStepRightBtn;
+NavButton seqSaveBtn;
 
 // Bluetooth HID foot pedal state management
 static portMUX_TYPE g_keyStateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -139,6 +152,251 @@ int8_t clampTranspose(int8_t v) {
   if (v > 12) return 12;
   return v;
 }
+
+// --- BT bond persistence (SD card) ---
+
+// BT bond save state
+static bool g_btBondSaved = false;
+static unsigned long g_btConnectedSince = 0;
+
+// BT status overlay message
+static char g_btOverlayMsg[24] = "";
+static unsigned long g_btOverlayUntil = 0;
+
+void showBTOverlay(const char* msg, uint16_t color, int durationMs = 2000) {
+  strncpy(g_btOverlayMsg, msg, sizeof(g_btOverlayMsg) - 1);
+  g_btOverlayMsg[sizeof(g_btOverlayMsg) - 1] = '\0';
+  g_btOverlayUntil = millis() + durationMs;
+
+  // 画面中央にオーバーレイ表示
+  int w = strlen(msg) * 12 + 20;
+  int h = 30;
+  int x = (SCREEN_WIDTH - w) / 2;
+  int y = (SCREEN_HEIGHT - h) / 2;
+  M5.Lcd.fillRect(x, y, w, h, color);
+  M5.Lcd.drawRect(x, y, w, h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(x + 10, y + 7);
+  M5.Lcd.print(msg);
+}
+
+// Save BT bonding info from NVS to SD card
+bool saveBTBondToSD() {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_BT_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    Serial.printf("[BT_BOND] nvs_open failed: err=0x%x\n", err);
+    return false;
+  }
+
+  uint8_t buffer[NVS_BT_MAX_SIZE];
+  size_t totalSize = 0;
+
+  for (int i = 0; i < 10; i++) {
+    char key[20];
+    snprintf(key, sizeof(key), "%s%d", NVS_BT_KEY_PREFIX, i);
+
+    size_t chunkSize = 0;
+    err = nvs_get_blob(nvs, key, NULL, &chunkSize);
+    if (err != ESP_OK || chunkSize == 0) {
+      Serial.printf("[BT_BOND] NVS key '%s': err=0x%x, size=%d\n", key, err, chunkSize);
+      break;
+    }
+    if (totalSize + chunkSize > sizeof(buffer)) break;
+
+    err = nvs_get_blob(nvs, key, buffer + totalSize, &chunkSize);
+    if (err != ESP_OK) {
+      Serial.printf("[BT_BOND] NVS read '%s' failed: err=0x%x\n", key, err);
+      break;
+    }
+    Serial.printf("[BT_BOND] NVS key '%s': %d bytes OK\n", key, chunkSize);
+    totalSize += chunkSize;
+  }
+  nvs_close(nvs);
+
+  if (totalSize == 0) {
+    Serial.println("[BT_BOND] No bond data in NVS yet");
+    return false;
+  }
+
+  if (!ensureSDReady()) {
+    Serial.println("[BT_BOND] SD card not ready");
+    return false;
+  }
+
+  File file = SD.open(BT_BOND_FILE, FILE_WRITE);
+  if (!file) {
+    Serial.println("[BT_BOND] SD file open failed");
+    return false;
+  }
+  size_t written = file.write(buffer, totalSize);
+  file.close();
+
+  if (written != totalSize) {
+    Serial.printf("[BT_BOND] Write incomplete: %d/%d bytes\n", written, totalSize);
+    return false;
+  }
+
+  Serial.printf("[BT_BOND] Saved to SD: %d bytes\n", totalSize);
+  return true;
+}
+
+// Restore BT bonding info from SD card to NVS (call BEFORE Bluedroid init)
+bool restoreBTBondFromSD() {
+  if (!SD.exists(BT_BOND_FILE)) {
+    Serial.println("[BT_BOND] restoreBTBondFromSD: file not found on SD");
+    return false;
+  }
+
+  File file = SD.open(BT_BOND_FILE, FILE_READ);
+  if (!file) {
+    Serial.println("[BT_BOND] restoreBTBondFromSD: SD file open failed");
+    return false;
+  }
+
+  size_t fileSize = file.size();
+  if (fileSize == 0 || fileSize > NVS_BT_MAX_SIZE) {
+    Serial.printf("[BT_BOND] restoreBTBondFromSD: invalid file size %d\n", fileSize);
+    file.close();
+    return false;
+  }
+
+  uint8_t buffer[NVS_BT_MAX_SIZE];
+  file.read(buffer, fileSize);
+  file.close();
+
+  // Check if NVS already has valid BT config (don't overwrite if present)
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_BT_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+    Serial.println("[BT_BOND] restoreBTBondFromSD: nvs_open failed");
+    return false;
+  }
+
+  size_t existingSize = 0;
+  esp_err_t err = nvs_get_blob(nvs, "bt_cfg_key0", NULL, &existingSize);
+  if (err == ESP_OK && existingSize > 0) {
+    nvs_close(nvs);
+    Serial.println("[BT_BOND] NVS already has BT config, skipping SD restore");
+    return true;
+  }
+
+  // Write data from SD to NVS in chunks
+  size_t written = 0;
+  int count = 0;
+  while (written < fileSize) {
+    char key[20];
+    snprintf(key, sizeof(key), "%s%d", NVS_BT_KEY_PREFIX, count);
+
+    size_t chunkSize = fileSize - written;
+    if (chunkSize > NVS_BT_CHUNK_SIZE) chunkSize = NVS_BT_CHUNK_SIZE;
+
+    if (nvs_set_blob(nvs, key, buffer + written, chunkSize) != ESP_OK) {
+      Serial.printf("[BT_BOND] restoreBTBondFromSD: nvs_set_blob failed for %s\n", key);
+      nvs_close(nvs);
+      return false;
+    }
+
+    written += chunkSize;
+    count++;
+  }
+
+  nvs_commit(nvs);
+  nvs_close(nvs);
+
+  Serial.printf("[BT_BOND] Restored from SD to NVS: %d bytes\n", fileSize);
+  return true;
+}
+
+// --- End BT bond persistence ---
+
+// --- Sequence pattern SD persistence ---
+
+bool ensureSDReady() {
+  // Try a simple test to see if SD is accessible
+  File testFile = SD.open("/sd_test.tmp", FILE_WRITE);
+  if (testFile) {
+    testFile.close();
+    SD.remove("/sd_test.tmp");
+    return true;
+  }
+  // SD not ready - try re-initializing
+  Serial.println("[SD] Re-initializing SD card...");
+  SD.end();
+  delay(100);
+  if (SD.begin(4, SPI, 25000000)) {
+    Serial.println("[SD] SD re-init OK");
+    return true;
+  }
+  Serial.println("[SD] SD re-init FAILED");
+  return false;
+}
+
+bool saveSequencesToSD() {
+  if (!ensureSDReady()) {
+    Serial.println("[SEQ] Save failed: SD card not ready");
+    return false;
+  }
+
+  File file = SD.open(SEQ_FILE, FILE_WRITE);
+  if (!file) {
+    Serial.println("[SEQ] Save failed: cannot open file");
+    return false;
+  }
+
+  // Header: magic(2) + version(1) + patCount(1) + stepCount(1) + pad(1) = 6 bytes
+  file.write('S'); file.write('Q');
+  file.write((uint8_t)1);
+  file.write((uint8_t)SEQ_PATTERN_COUNT);
+  file.write((uint8_t)SEQ_STEP_COUNT);
+  file.write((uint8_t)0);
+
+  // Data: 16 patterns x 6 steps = 96 bytes
+  for (int p = 0; p < SEQ_PATTERN_COUNT; p++) {
+    file.write((const uint8_t*)seqPatterns[p], SEQ_STEP_COUNT);
+  }
+
+  file.close();
+  Serial.printf("[SEQ] Saved %d patterns to SD\n", SEQ_PATTERN_COUNT);
+  return true;
+}
+
+bool loadSequencesFromSD() {
+  if (!SD.exists(SEQ_FILE)) {
+    Serial.println("[SEQ] No sequence file on SD");
+    return false;
+  }
+
+  File file = SD.open(SEQ_FILE, FILE_READ);
+  if (!file) {
+    Serial.println("[SEQ] Load failed: cannot open file");
+    return false;
+  }
+
+  uint8_t header[6];
+  if (file.read(header, 6) != 6) {
+    Serial.println("[SEQ] Invalid header");
+    file.close();
+    return false;
+  }
+
+  if (header[0] != 'S' || header[1] != 'Q' || header[2] != 1 ||
+      header[3] != SEQ_PATTERN_COUNT || header[4] != SEQ_STEP_COUNT) {
+    Serial.println("[SEQ] Incompatible file format");
+    file.close();
+    return false;
+  }
+
+  for (int p = 0; p < SEQ_PATTERN_COUNT; p++) {
+    file.read((uint8_t*)seqPatterns[p], SEQ_STEP_COUNT);
+  }
+
+  file.close();
+  Serial.printf("[SEQ] Loaded %d patterns from SD\n", SEQ_PATTERN_COUNT);
+  return true;
+}
+
+// --- End sequence pattern SD persistence ---
 
 // Bluetooth HID foot pedal callback
 void key_callback(uint8_t *p_msg)
@@ -192,11 +450,26 @@ void setup() {
   initDirectModeButtons();
   initKeyModeButtons();
   initRelativeModeButtons();
-  initPresetModeButtons();
-  
+  initSequenceModeButtons();
+
+  // SDカード状態確認
+  if (SD.cardType() == CARD_NONE) {
+    Serial.println("[SD] WARNING: No SD card detected!");
+  } else {
+    Serial.printf("[SD] Card type: %d, Size: %lluMB\n", SD.cardType(), SD.cardSize() / (1024 * 1024));
+  }
+
+  // SDカードからシーケンスパターンを読み込み
+  Serial.println("Loading sequence patterns from SD...");
+  loadSequencesFromSD();
+
   // 最初の転調値0のボタンを確実に光らせる（-5から+6レンジでは5番目のボタン）
   transposeButtons[5] = true;  // RANGE_MINUS5_TO_6の場合、ボタン5が転調値0
   
+  // Restore BT bond info from SD card to NVS (BEFORE Bluedroid init)
+  Serial.println("Checking for saved BT bond info on SD card...");
+  restoreBTBondFromSD();
+
   // Initialize Bluetooth HID for foot pedal
   Serial.println("Initializing Bluetooth HID...");
   long ret = hid_l2cap_initialize(key_callback);
@@ -246,6 +519,48 @@ void loop() {
         Serial.println("Retry connect (disconnected)");
         hid_l2cap_reconnect();
       }
+      g_btConnectedSince = 0;
+    }
+
+    // BT接続状態が変わったら画面更新
+    if (status != g_lastStatusDrawn) {
+      g_lastStatusDrawn = status;
+      needFullRedraw = true;
+      if (status == BT_CONNECTED) {
+        showBTOverlay("BT Connected", 0x03E0, 1500); // dark green
+      } else if (status == BT_DISCONNECTED) {
+        showBTOverlay("BT Disconnected", RED, 1500);
+      }
+    }
+
+    // 新しい認証（ペアリング）完了時
+    if (hid_l2cap_auth_completed()) {
+      Serial.println("[BT_BOND] Auth completed - saving bond to SD...");
+      g_btBondSaved = false;
+      g_btConnectedSince = 0;
+      showBTOverlay("BT Paired!", BLUE, 1500);
+    }
+
+    // BT接続安定後（3秒）にボンド情報をSDに保存
+    if (status == BT_CONNECTED) {
+      if (g_btConnectedSince == 0) {
+        g_btConnectedSince = now;
+      }
+      if (!g_btBondSaved && (now - g_btConnectedSince) >= 3000) {
+        g_btBondSaved = true;
+        Serial.println("[BT_BOND] 3s stable - saving bond to SD...");
+        if (saveBTBondToSD()) {
+          showBTOverlay("Bond Saved!", 0x03E0, 1500);
+        } else {
+          showBTOverlay("Bond Save Err", RED, 2000);
+        }
+      }
+    }
+
+    // オーバーレイ表示期限切れで画面再描画
+    if (g_btOverlayUntil > 0 && now >= g_btOverlayUntil) {
+      g_btOverlayUntil = 0;
+      needFullRedraw = true;
     }
 
     if (needFullRedraw) {
@@ -420,49 +735,51 @@ void initRelativeModeButtons() {
   }
 }
 
-// プリセットモードのボタン配置（6つのスロット）
-void initPresetModeButtons() {
+// シーケンスモードのボタン配置
+void initSequenceModeButtons() {
+  memset(seqPatterns, 0, sizeof(seqPatterns));
+
   int slotWidth = 48;
   int slotSpacing = 5;
   int startX = 5;
 
-  int buttonH = 45;     // 上下ボタンとスロットをすべて同じ高さに
-  int upBtnY = 55;
-  int slotY = 105;      // 上ボタンの下に配置
-  int downBtnY = 155;   // スロットの下に配置
+  // レイアウト: パターン選択(h=34) → 上ボタン(h=30) → 値(h=32) → 下ボタン(h=30) → ステップ移動(h=30)
+  int patRowY = 52;   int patRowH = 34;
+  int upBtnY  = 90;   int upBtnH  = 30;
+  int slotY   = 122;  int slotH   = 32;
+  int downBtnY = 156;  int downBtnH = 30;
+  int navY    = 192;  int navH    = 32;
 
-  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
+  for (int i = 0; i < SEQ_STEP_COUNT; i++) {
     int x = startX + i * (slotWidth + slotSpacing);
 
-    presetSlots[i].slotX = x;
-    presetSlots[i].slotY = slotY;
-    presetSlots[i].slotW = slotWidth;
-    presetSlots[i].slotH = buttonH;
+    seqSteps[i].upBtnX = x;    seqSteps[i].upBtnY = upBtnY;
+    seqSteps[i].upBtnW = slotWidth; seqSteps[i].upBtnH = upBtnH;
 
-    presetSlots[i].upBtnX = x;
-    presetSlots[i].upBtnY = upBtnY;
-    presetSlots[i].upBtnW = slotWidth;
-    presetSlots[i].upBtnH = buttonH;
+    seqSteps[i].slotX = x;     seqSteps[i].slotY = slotY;
+    seqSteps[i].slotW = slotWidth;  seqSteps[i].slotH = slotH;
 
-    presetSlots[i].downBtnX = x;
-    presetSlots[i].downBtnY = downBtnY;
-    presetSlots[i].downBtnW = slotWidth;
-    presetSlots[i].downBtnH = buttonH;
+    seqSteps[i].downBtnX = x;  seqSteps[i].downBtnY = downBtnY;
+    seqSteps[i].downBtnW = slotWidth; seqSteps[i].downBtnH = downBtnH;
   }
 
-  // 左右移動ボタンの配置
-  int navBtnY = 205;
-  int navBtnW = 80;
-  int navBtnH = 35;
-  presetLeftBtn.x = 10;
-  presetLeftBtn.y = navBtnY;
-  presetLeftBtn.w = navBtnW;
-  presetLeftBtn.h = navBtnH;
+  // パターン選択ボタン（大きめ）
+  seqPatLeftBtn.x = 5;    seqPatLeftBtn.y = patRowY;
+  seqPatLeftBtn.w = 50;   seqPatLeftBtn.h = patRowH;
 
-  presetRightBtn.x = 230;
-  presetRightBtn.y = navBtnY;
-  presetRightBtn.w = navBtnW;
-  presetRightBtn.h = navBtnH;
+  seqPatRightBtn.x = 165; seqPatRightBtn.y = patRowY;
+  seqPatRightBtn.w = 50;  seqPatRightBtn.h = patRowH;
+
+  // SAVEボタン（大きめ）
+  seqSaveBtn.x = 225; seqSaveBtn.y = patRowY;
+  seqSaveBtn.w = 90;  seqSaveBtn.h = patRowH;
+
+  // ステップ移動ボタン
+  seqStepLeftBtn.x = 10;   seqStepLeftBtn.y = navY;
+  seqStepLeftBtn.w = 80;   seqStepLeftBtn.h = navH;
+
+  seqStepRightBtn.x = 230; seqStepRightBtn.y = navY;
+  seqStepRightBtn.w = 80;  seqStepRightBtn.h = navH;
 }
 
 void drawInterface() {
@@ -485,6 +802,20 @@ void drawInterface() {
   M5.Lcd.setTextSize(1);
   M5.Lcd.setCursor(10, 40);
   M5.Lcd.printf("AllOff: %s", allNotesOffEnabled ? "ON" : "OFF");
+
+  // BT接続状態表示（2行目右）
+  {
+    BT_STATUS btSt = hid_l2cap_is_connected();
+    uint16_t btColor;
+    const char* btLabel;
+    if (btSt == BT_CONNECTED)    { btColor = GREEN;    btLabel = "BT:ON"; }
+    else if (btSt == BT_CONNECTING) { btColor = YELLOW; btLabel = "BT:.."; }
+    else                            { btColor = RED;     btLabel = "BT:--"; }
+    M5.Lcd.setTextColor(btColor);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(100, 40);
+    M5.Lcd.print(btLabel);
+  }
   
   if (currentMode == DIRECT_MODE) {
     drawDirectMode();
@@ -493,9 +824,9 @@ void drawInterface() {
   } else if (currentMode == RELATIVE_MODE) {
     drawRelativeMode();
   } else {
-    drawPresetMode();
+    drawSequenceMode();
   }
-  
+
   updateStatusArea();
 }
 
@@ -669,84 +1000,119 @@ void drawRelativeMode() {
   }
 }
 
-// プリセットモード描画
-void drawPresetMode() {
-  // 6つのスロットを描画
-  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
-    bool isCurrent = (i == presetCursorPos);
+// シーケンスモード描画
+void drawSequenceMode() {
+  // パターン選択行（大きめボタン）
+  // 左矢印ボタン
+  M5.Lcd.fillRect(seqPatLeftBtn.x, seqPatLeftBtn.y,
+                  seqPatLeftBtn.w, seqPatLeftBtn.h, BLUE);
+  M5.Lcd.drawRect(seqPatLeftBtn.x, seqPatLeftBtn.y,
+                  seqPatLeftBtn.w, seqPatLeftBtn.h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(3);
+  M5.Lcd.setCursor(seqPatLeftBtn.x + (seqPatLeftBtn.w - 18) / 2,
+                   seqPatLeftBtn.y + (seqPatLeftBtn.h - 24) / 2);
+  M5.Lcd.print("<");
 
-    // 上ボタン
-    uint16_t upBtnColor = DARKGREY;
-    M5.Lcd.fillRect(presetSlots[i].upBtnX, presetSlots[i].upBtnY,
-                    presetSlots[i].upBtnW, presetSlots[i].upBtnH, upBtnColor);
-    M5.Lcd.drawRect(presetSlots[i].upBtnX, presetSlots[i].upBtnY,
-                    presetSlots[i].upBtnW, presetSlots[i].upBtnH, WHITE);
+  // パターン番号表示
+  int patDispX = seqPatLeftBtn.x + seqPatLeftBtn.w + 3;
+  int patDispW = seqPatRightBtn.x - patDispX - 3;
+  M5.Lcd.fillRect(patDispX, seqPatLeftBtn.y, patDispW, seqPatLeftBtn.h, NAVY);
+  M5.Lcd.drawRect(patDispX, seqPatLeftBtn.y, patDispW, seqPatLeftBtn.h, WHITE);
+  M5.Lcd.setTextColor(YELLOW);
+  M5.Lcd.setTextSize(2);
+  char patStr[20];
+  snprintf(patStr, sizeof(patStr), "Pat %02d/%02d", seqCurrentPattern + 1, SEQ_PATTERN_COUNT);
+  int patTextW = strlen(patStr) * 12;
+  M5.Lcd.setCursor(patDispX + (patDispW - patTextW) / 2,
+                   seqPatLeftBtn.y + (seqPatLeftBtn.h - 16) / 2);
+  M5.Lcd.print(patStr);
 
-    // 上ボタンに三角形を描画（▲）
-    int centerX = presetSlots[i].upBtnX + presetSlots[i].upBtnW / 2;
-    int centerY = presetSlots[i].upBtnY + presetSlots[i].upBtnH / 2;
-    int triSize = 12;
-    M5.Lcd.fillTriangle(
-      centerX, centerY - triSize,           // 上の頂点
-      centerX - triSize, centerY + triSize, // 左下
-      centerX + triSize, centerY + triSize, // 右下
-      WHITE
-    );
+  // 右矢印ボタン
+  M5.Lcd.fillRect(seqPatRightBtn.x, seqPatRightBtn.y,
+                  seqPatRightBtn.w, seqPatRightBtn.h, BLUE);
+  M5.Lcd.drawRect(seqPatRightBtn.x, seqPatRightBtn.y,
+                  seqPatRightBtn.w, seqPatRightBtn.h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(3);
+  M5.Lcd.setCursor(seqPatRightBtn.x + (seqPatRightBtn.w - 18) / 2,
+                   seqPatRightBtn.y + (seqPatRightBtn.h - 24) / 2);
+  M5.Lcd.print(">");
 
-    // スロット（転調値表示）
+  // SAVEボタン
+  M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
+                  seqSaveBtn.w, seqSaveBtn.h, RED);
+  M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
+                  seqSaveBtn.w, seqSaveBtn.h, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(seqSaveBtn.x + (seqSaveBtn.w - 48) / 2,
+                   seqSaveBtn.y + (seqSaveBtn.h - 16) / 2);
+  M5.Lcd.print("SAVE");
+
+  // 6つのステップスロット（プリセットモードと同様のレイアウト）
+  for (int i = 0; i < SEQ_STEP_COUNT; i++) {
+    bool isCurrent = (i == seqCurrentStep);
+    int8_t value = seqPatterns[seqCurrentPattern][i];
+
+    // 上ボタン（▲）
+    M5.Lcd.fillRect(seqSteps[i].upBtnX, seqSteps[i].upBtnY,
+                    seqSteps[i].upBtnW, seqSteps[i].upBtnH, DARKGREY);
+    M5.Lcd.drawRect(seqSteps[i].upBtnX, seqSteps[i].upBtnY,
+                    seqSteps[i].upBtnW, seqSteps[i].upBtnH, WHITE);
+    int cx = seqSteps[i].upBtnX + seqSteps[i].upBtnW / 2;
+    int cy = seqSteps[i].upBtnY + seqSteps[i].upBtnH / 2;
+    int ts = 10;
+    M5.Lcd.fillTriangle(cx, cy - ts, cx - ts, cy + ts, cx + ts, cy + ts, WHITE);
+
+    // 転調値スロット
     uint16_t slotColor = isCurrent ? GREEN : DARKGREY;
     uint16_t slotTextColor = isCurrent ? BLACK : WHITE;
-    M5.Lcd.fillRect(presetSlots[i].slotX, presetSlots[i].slotY,
-                    presetSlots[i].slotW, presetSlots[i].slotH, slotColor);
-    M5.Lcd.drawRect(presetSlots[i].slotX, presetSlots[i].slotY,
-                    presetSlots[i].slotW, presetSlots[i].slotH, WHITE);
+    M5.Lcd.fillRect(seqSteps[i].slotX, seqSteps[i].slotY,
+                    seqSteps[i].slotW, seqSteps[i].slotH, slotColor);
+    M5.Lcd.drawRect(seqSteps[i].slotX, seqSteps[i].slotY,
+                    seqSteps[i].slotW, seqSteps[i].slotH, WHITE);
 
-    // 転調値を表示
     char valueStr[5];
-    int8_t value = presetTransposeValues[i];
     if (value > 0) sprintf(valueStr, "+%d", value);
     else sprintf(valueStr, "%d", value);
 
     M5.Lcd.setTextColor(slotTextColor);
     M5.Lcd.setTextSize(3);
-    int valueX = presetSlots[i].slotX + (presetSlots[i].slotW - strlen(valueStr) * 18) / 2;
-    int valueY = presetSlots[i].slotY + (presetSlots[i].slotH - 24) / 2;
-    M5.Lcd.setCursor(valueX, valueY);
+    int vx = seqSteps[i].slotX + (seqSteps[i].slotW - (int)strlen(valueStr) * 18) / 2;
+    int vy = seqSteps[i].slotY + (seqSteps[i].slotH - 24) / 2;
+    M5.Lcd.setCursor(vx, vy);
     M5.Lcd.print(valueStr);
 
-    // 下ボタン
-    uint16_t downBtnColor = DARKGREY;
-    M5.Lcd.fillRect(presetSlots[i].downBtnX, presetSlots[i].downBtnY,
-                    presetSlots[i].downBtnW, presetSlots[i].downBtnH, downBtnColor);
-    M5.Lcd.drawRect(presetSlots[i].downBtnX, presetSlots[i].downBtnY,
-                    presetSlots[i].downBtnW, presetSlots[i].downBtnH, WHITE);
-
-    // 下ボタンに三角形を描画（▼）
-    centerX = presetSlots[i].downBtnX + presetSlots[i].downBtnW / 2;
-    centerY = presetSlots[i].downBtnY + presetSlots[i].downBtnH / 2;
-    M5.Lcd.fillTriangle(
-      centerX, centerY + triSize,           // 下の頂点
-      centerX - triSize, centerY - triSize, // 左上
-      centerX + triSize, centerY - triSize, // 右上
-      WHITE
-    );
+    // 下ボタン（▼）
+    M5.Lcd.fillRect(seqSteps[i].downBtnX, seqSteps[i].downBtnY,
+                    seqSteps[i].downBtnW, seqSteps[i].downBtnH, DARKGREY);
+    M5.Lcd.drawRect(seqSteps[i].downBtnX, seqSteps[i].downBtnY,
+                    seqSteps[i].downBtnW, seqSteps[i].downBtnH, WHITE);
+    cx = seqSteps[i].downBtnX + seqSteps[i].downBtnW / 2;
+    cy = seqSteps[i].downBtnY + seqSteps[i].downBtnH / 2;
+    M5.Lcd.fillTriangle(cx, cy + ts, cx - ts, cy - ts, cx + ts, cy - ts, WHITE);
   }
 
-  // 左右移動ボタンを描画
-  // 左ボタン
-  M5.Lcd.fillRect(presetLeftBtn.x, presetLeftBtn.y, presetLeftBtn.w, presetLeftBtn.h, BLUE);
-  M5.Lcd.drawRect(presetLeftBtn.x, presetLeftBtn.y, presetLeftBtn.w, presetLeftBtn.h, WHITE);
+  // ステップ移動ボタン
+  M5.Lcd.fillRect(seqStepLeftBtn.x, seqStepLeftBtn.y,
+                  seqStepLeftBtn.w, seqStepLeftBtn.h, BLUE);
+  M5.Lcd.drawRect(seqStepLeftBtn.x, seqStepLeftBtn.y,
+                  seqStepLeftBtn.w, seqStepLeftBtn.h, WHITE);
   M5.Lcd.setTextColor(WHITE);
   M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(presetLeftBtn.x + (presetLeftBtn.w - 18) / 2, presetLeftBtn.y + (presetLeftBtn.h - 24) / 2);
+  M5.Lcd.setCursor(seqStepLeftBtn.x + (seqStepLeftBtn.w - 18) / 2,
+                   seqStepLeftBtn.y + (seqStepLeftBtn.h - 24) / 2);
   M5.Lcd.print("<");
 
-  // 右ボタン
-  M5.Lcd.fillRect(presetRightBtn.x, presetRightBtn.y, presetRightBtn.w, presetRightBtn.h, BLUE);
-  M5.Lcd.drawRect(presetRightBtn.x, presetRightBtn.y, presetRightBtn.w, presetRightBtn.h, WHITE);
+  M5.Lcd.fillRect(seqStepRightBtn.x, seqStepRightBtn.y,
+                  seqStepRightBtn.w, seqStepRightBtn.h, BLUE);
+  M5.Lcd.drawRect(seqStepRightBtn.x, seqStepRightBtn.y,
+                  seqStepRightBtn.w, seqStepRightBtn.h, WHITE);
   M5.Lcd.setTextColor(WHITE);
   M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(presetRightBtn.x + (presetRightBtn.w - 18) / 2, presetRightBtn.y + (presetRightBtn.h - 24) / 2);
+  M5.Lcd.setCursor(seqStepRightBtn.x + (seqStepRightBtn.w - 18) / 2,
+                   seqStepRightBtn.y + (seqStepRightBtn.h - 24) / 2);
   M5.Lcd.print(">");
 }
 
@@ -806,20 +1172,18 @@ void processFootPedal() {
                   leftJustPressed ? "PRESSED" : "released",
                   rightJustPressed ? "PRESSED" : "released");
 
-    if (currentMode == PRESET_MODE) {
-      // PRESET_MODE: ペダルでカーソルを左右に移動
+    if (currentMode == SEQUENCE_MODE) {
+      // SEQUENCE_MODE: ペダルでステップを移動
       if (leftJustPressed) {
-        // 左ペダル: カーソルを左に移動
-        presetCursorPos = (presetCursorPos > 0) ? presetCursorPos - 1 : PRESET_SLOT_COUNT - 1;
-        handleTransposeChange(presetTransposeValues[presetCursorPos]);
+        seqCurrentStep = (seqCurrentStep > 0) ? seqCurrentStep - 1 : SEQ_STEP_COUNT - 1;
+        handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
         needFullRedraw = true;
-        Serial.printf("Preset Mode (Pedal): Cursor moved to slot %d\n", presetCursorPos);
+        Serial.printf("Sequence Mode (Pedal): Step %d, Pat %d\n", seqCurrentStep, seqCurrentPattern);
       } else if (rightJustPressed) {
-        // 右ペダル: カーソルを右に移動
-        presetCursorPos = (presetCursorPos < PRESET_SLOT_COUNT - 1) ? presetCursorPos + 1 : 0;
-        handleTransposeChange(presetTransposeValues[presetCursorPos]);
+        seqCurrentStep = (seqCurrentStep < SEQ_STEP_COUNT - 1) ? seqCurrentStep + 1 : 0;
+        handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
         needFullRedraw = true;
-        Serial.printf("Preset Mode (Pedal): Cursor moved to slot %d\n", presetCursorPos);
+        Serial.printf("Sequence Mode (Pedal): Step %d, Pat %d\n", seqCurrentStep, seqCurrentPattern);
       }
     } else {
       // 他のモード: 従来の転調値選択処理
@@ -944,7 +1308,7 @@ void processHardwareButtons() {
       selectedMinorKey = -1;
       needFullRedraw = true;
     } else {
-      // RELATIVE_MODE, PRESET_MODE: 何もしない
+      // RELATIVE_MODE, SEQUENCE_MODE: 何もしない
     }
     lastButtonCheck = now;
     Serial.println("Range/Mode toggled (B)");
@@ -957,7 +1321,7 @@ void processHardwareButtons() {
 
     if (currentMode == DIRECT_MODE) currentMode = KEY_MODE;
     else if (currentMode == KEY_MODE) currentMode = RELATIVE_MODE;
-    else if (currentMode == RELATIVE_MODE) currentMode = PRESET_MODE;
+    else if (currentMode == RELATIVE_MODE) currentMode = SEQUENCE_MODE;
     else currentMode = DIRECT_MODE;
 
     if (currentMode == DIRECT_MODE) {
@@ -971,18 +1335,16 @@ void processHardwareButtons() {
       // 相対モード：特に選択状態は持たない
       Serial.println("RelativeMode entered");
     } else {
-      // プリセットモード：カーソル位置の転調値を適用
-      handleTransposeChange(presetTransposeValues[presetCursorPos]);
-      Serial.println("PresetMode entered");
+      // シーケンスモード：現在ステップの転調値を適用
+      handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
+      Serial.println("SequenceMode entered");
     }
 
     needFullRedraw = true;
     lastButtonCheck = now;
+    const char* modeNames[] = {"DIRECT", "KEY", "RELATIVE", "SEQUENCE"};
     Serial.printf("Mode: %s, Transpose: %d (maintained)\n",
-                  currentMode == DIRECT_MODE ? "DIRECT" :
-                  (currentMode == KEY_MODE ? "KEY" :
-                  (currentMode == RELATIVE_MODE ? "RELATIVE" : "PRESET")),
-                  transposeValue);
+                  modeNames[currentMode], transposeValue);
   }
 }
 
@@ -1057,7 +1419,7 @@ void processTouch() {
   } else if (currentMode == RELATIVE_MODE) {
     processRelativeModeTouch(pos);
   } else {
-    processPresetModeTouch(pos);
+    processSequenceModeTouch(pos);
   }
 }
 
@@ -1150,62 +1512,105 @@ void processRelativeModeTouch(TouchPoint_t pos) {
   }
 }
 
-// プリセットモードのタッチ処理
-void processPresetModeTouch(TouchPoint_t pos) {
-  // 左ボタンのタッチ検出
-  if (pos.x >= presetLeftBtn.x && pos.x <= presetLeftBtn.x + presetLeftBtn.w &&
-      pos.y >= presetLeftBtn.y && pos.y <= presetLeftBtn.y + presetLeftBtn.h) {
-    // カーソルを左に移動
-    presetCursorPos = (presetCursorPos > 0) ? presetCursorPos - 1 : PRESET_SLOT_COUNT - 1;
-    handleTransposeChange(presetTransposeValues[presetCursorPos]);
+// シーケンスモードのタッチ処理
+void processSequenceModeTouch(TouchPoint_t pos) {
+  // パターン左ボタン
+  if (pos.x >= seqPatLeftBtn.x && pos.x <= seqPatLeftBtn.x + seqPatLeftBtn.w &&
+      pos.y >= seqPatLeftBtn.y && pos.y <= seqPatLeftBtn.y + seqPatLeftBtn.h) {
+    seqCurrentPattern = (seqCurrentPattern > 0) ? seqCurrentPattern - 1 : SEQ_PATTERN_COUNT - 1;
+    seqCurrentStep = 0;
+    handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
+    needFullRedraw = true;
+    Serial.printf("Seq: Pattern %d selected\n", seqCurrentPattern + 1);
+    return;
+  }
+
+  // パターン右ボタン
+  if (pos.x >= seqPatRightBtn.x && pos.x <= seqPatRightBtn.x + seqPatRightBtn.w &&
+      pos.y >= seqPatRightBtn.y && pos.y <= seqPatRightBtn.y + seqPatRightBtn.h) {
+    seqCurrentPattern = (seqCurrentPattern < SEQ_PATTERN_COUNT - 1) ? seqCurrentPattern + 1 : 0;
+    seqCurrentStep = 0;
+    handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
+    needFullRedraw = true;
+    Serial.printf("Seq: Pattern %d selected\n", seqCurrentPattern + 1);
+    return;
+  }
+
+  // SAVEボタン
+  if (pos.x >= seqSaveBtn.x && pos.x <= seqSaveBtn.x + seqSaveBtn.w &&
+      pos.y >= seqSaveBtn.y && pos.y <= seqSaveBtn.y + seqSaveBtn.h) {
+    if (saveSequencesToSD()) {
+      // 保存成功フィードバック：ボタンを緑に一瞬表示
+      M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
+                      seqSaveBtn.w, seqSaveBtn.h, GREEN);
+      M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
+                      seqSaveBtn.w, seqSaveBtn.h, WHITE);
+      M5.Lcd.setTextColor(BLACK);
+      M5.Lcd.setTextSize(2);
+      M5.Lcd.setCursor(seqSaveBtn.x + 18, seqSaveBtn.y + 3);
+      M5.Lcd.print("OK!");
+      delay(500);
+    } else {
+      // 保存失敗フィードバック
+      M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
+                      seqSaveBtn.w, seqSaveBtn.h, ORANGE);
+      M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
+                      seqSaveBtn.w, seqSaveBtn.h, WHITE);
+      M5.Lcd.setTextColor(BLACK);
+      M5.Lcd.setTextSize(2);
+      M5.Lcd.setCursor(seqSaveBtn.x + 10, seqSaveBtn.y + 3);
+      M5.Lcd.print("ERR!");
+      delay(500);
+    }
     needFullRedraw = true;
     return;
   }
 
-  // 右ボタンのタッチ検出
-  if (pos.x >= presetRightBtn.x && pos.x <= presetRightBtn.x + presetRightBtn.w &&
-      pos.y >= presetRightBtn.y && pos.y <= presetRightBtn.y + presetRightBtn.h) {
-    // カーソルを右に移動
-    presetCursorPos = (presetCursorPos < PRESET_SLOT_COUNT - 1) ? presetCursorPos + 1 : 0;
-    handleTransposeChange(presetTransposeValues[presetCursorPos]);
+  // ステップ左ボタン
+  if (pos.x >= seqStepLeftBtn.x && pos.x <= seqStepLeftBtn.x + seqStepLeftBtn.w &&
+      pos.y >= seqStepLeftBtn.y && pos.y <= seqStepLeftBtn.y + seqStepLeftBtn.h) {
+    seqCurrentStep = (seqCurrentStep > 0) ? seqCurrentStep - 1 : SEQ_STEP_COUNT - 1;
+    handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
     needFullRedraw = true;
     return;
   }
 
-  for (int i = 0; i < PRESET_SLOT_COUNT; i++) {
-    // 上ボタンのタッチ検出
-    if (pos.x >= presetSlots[i].upBtnX && pos.x <= presetSlots[i].upBtnX + presetSlots[i].upBtnW &&
-        pos.y >= presetSlots[i].upBtnY && pos.y <= presetSlots[i].upBtnY + presetSlots[i].upBtnH) {
-      // 転調値を増やす
-      presetTransposeValues[i] = clampTranspose(presetTransposeValues[i] + 1);
-      // カーソルをこのスロットに移動
-      presetCursorPos = i;
-      // 転調値を適用
-      handleTransposeChange(presetTransposeValues[i]);
+  // ステップ右ボタン
+  if (pos.x >= seqStepRightBtn.x && pos.x <= seqStepRightBtn.x + seqStepRightBtn.w &&
+      pos.y >= seqStepRightBtn.y && pos.y <= seqStepRightBtn.y + seqStepRightBtn.h) {
+    seqCurrentStep = (seqCurrentStep < SEQ_STEP_COUNT - 1) ? seqCurrentStep + 1 : 0;
+    handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
+    needFullRedraw = true;
+    return;
+  }
+
+  // ステップの上下ボタンとスロットタッチ
+  for (int i = 0; i < SEQ_STEP_COUNT; i++) {
+    // 上ボタン（値を+1）
+    if (pos.x >= seqSteps[i].upBtnX && pos.x <= seqSteps[i].upBtnX + seqSteps[i].upBtnW &&
+        pos.y >= seqSteps[i].upBtnY && pos.y <= seqSteps[i].upBtnY + seqSteps[i].upBtnH) {
+      seqPatterns[seqCurrentPattern][i] = clampTranspose(seqPatterns[seqCurrentPattern][i] + 1);
+      seqCurrentStep = i;
+      handleTransposeChange(seqPatterns[seqCurrentPattern][i]);
       needFullRedraw = true;
       return;
     }
 
-    // 下ボタンのタッチ検出
-    if (pos.x >= presetSlots[i].downBtnX && pos.x <= presetSlots[i].downBtnX + presetSlots[i].downBtnW &&
-        pos.y >= presetSlots[i].downBtnY && pos.y <= presetSlots[i].downBtnY + presetSlots[i].downBtnH) {
-      // 転調値を減らす
-      presetTransposeValues[i] = clampTranspose(presetTransposeValues[i] - 1);
-      // カーソルをこのスロットに移動
-      presetCursorPos = i;
-      // 転調値を適用
-      handleTransposeChange(presetTransposeValues[i]);
+    // 下ボタン（値を-1）
+    if (pos.x >= seqSteps[i].downBtnX && pos.x <= seqSteps[i].downBtnX + seqSteps[i].downBtnW &&
+        pos.y >= seqSteps[i].downBtnY && pos.y <= seqSteps[i].downBtnY + seqSteps[i].downBtnH) {
+      seqPatterns[seqCurrentPattern][i] = clampTranspose(seqPatterns[seqCurrentPattern][i] - 1);
+      seqCurrentStep = i;
+      handleTransposeChange(seqPatterns[seqCurrentPattern][i]);
       needFullRedraw = true;
       return;
     }
 
-    // スロット自体のタッチ検出（カーソル移動と転調値適用）
-    if (pos.x >= presetSlots[i].slotX && pos.x <= presetSlots[i].slotX + presetSlots[i].slotW &&
-        pos.y >= presetSlots[i].slotY && pos.y <= presetSlots[i].slotY + presetSlots[i].slotH) {
-      // カーソルをこのスロットに移動
-      presetCursorPos = i;
-      // 転調値を適用
-      handleTransposeChange(presetTransposeValues[i]);
+    // スロットタッチ（ステップ選択）
+    if (pos.x >= seqSteps[i].slotX && pos.x <= seqSteps[i].slotX + seqSteps[i].slotW &&
+        pos.y >= seqSteps[i].slotY && pos.y <= seqSteps[i].slotY + seqSteps[i].slotH) {
+      seqCurrentStep = i;
+      handleTransposeChange(seqPatterns[seqCurrentPattern][i]);
       needFullRedraw = true;
       return;
     }
