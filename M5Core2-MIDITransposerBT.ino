@@ -1,4 +1,9 @@
 #include <M5Core2.h>
+
+// for SD-Updater
+#define SDU_ENABLE_GZ
+#include <M5StackUpdater.h>
+
 #include <Arduino.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -427,7 +432,10 @@ void key_callback(uint8_t *p_msg)
 
 void setup() {
   M5.begin(true, true, true, true);
-  
+
+  // for SD-Updater
+  checkSDUpdater( SD, MENU_BIN, 2000, TFCARD_CS_PIN );
+
   Serial.begin(115200);
   Serial2.begin(31250, SERIAL_8N1, RXD2, TXD2);
   Serial2.setRxBufferSize(256);
