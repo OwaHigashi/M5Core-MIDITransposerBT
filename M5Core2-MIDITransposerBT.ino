@@ -11,6 +11,23 @@
 #include "nvs_flash.h"
 
 #include "src/hid_l2cap.h"
+#include <Free_Fonts.h>
+
+// ---- UIフォントヘルパー（GFXFFベースのきれいな描画に統一） ----
+// 旧 setTextSize(1)→Small, (2)→Medium, (3)→Large, (6)→Huge 相当
+static inline void uiFontSmall()  { M5.Lcd.setFreeFont(FSS9);   M5.Lcd.setTextSize(1); }
+static inline void uiFontMedium() { M5.Lcd.setFreeFont(FSSB12); M5.Lcd.setTextSize(1); }
+static inline void uiFontLarge()  { M5.Lcd.setFreeFont(FSSB18); M5.Lcd.setTextSize(1); }
+static inline void uiFontHuge()   { M5.Lcd.setFreeFont(FSSB24); M5.Lcd.setTextSize(1); }
+// テキスト描画（左上基準 / 矩形中央基準）
+static inline void uiDrawL(const char* t, int x, int y) {
+  M5.Lcd.setTextDatum(TL_DATUM);
+  M5.Lcd.drawString(t, x, y);
+}
+static inline void uiDrawC(const char* t, int rx, int ry, int rw, int rh) {
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.drawString(t, rx + rw / 2, ry + rh / 2);
+}
 
 // CORE2でのピンアサイン（M5 MIDI Module2）
 #define RXD2 13
@@ -38,7 +55,7 @@ static const uint8_t PEDAL_RIGHT_KEY = 0x51; // HID keyboard Down Arrow
 enum DisplayMode {
   DIRECT_MODE,
   KEY_MODE,
-  RELATIVE_MODE,
+  INSTANT_MODE,
   SEQUENCE_MODE
 };
 
@@ -65,7 +82,7 @@ struct KeyButton {
 
 // グローバル変数の宣言
 TouchButton directButtons[12];
-TouchButton relativeButtons[8];
+TouchButton instantButtons[8];
 KeyButton majorKeys[12];
 KeyButton minorKeys[12];
 
@@ -114,6 +131,9 @@ SeqStepSlot seqSteps[SEQ_STEP_COUNT];
 NavButton seqPatLeftBtn, seqPatRightBtn;
 NavButton seqStepLeftBtn, seqStepRightBtn;
 NavButton seqSaveBtn;
+
+// Instant Mode の 0 ボタン（上段の上、ボタン2個分の幅）
+NavButton instantZeroBtn;
 
 // Bluetooth HID foot pedal state management
 static portMUX_TYPE g_keyStateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -174,16 +194,15 @@ void showBTOverlay(const char* msg, uint16_t color, int durationMs = 2000) {
   g_btOverlayUntil = millis() + durationMs;
 
   // 画面中央にオーバーレイ表示
-  int w = strlen(msg) * 12 + 20;
-  int h = 30;
+  uiFontMedium();
+  int w = M5.Lcd.textWidth(msg) + 24;
+  int h = M5.Lcd.fontHeight() + 14;
   int x = (SCREEN_WIDTH - w) / 2;
   int y = (SCREEN_HEIGHT - h) / 2;
   M5.Lcd.fillRect(x, y, w, h, color);
   M5.Lcd.drawRect(x, y, w, h, WHITE);
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setCursor(x + 10, y + 7);
-  M5.Lcd.print(msg);
+  uiDrawC(msg, x, y, w, h);
 }
 
 // Save BT bonding info from NVS to SD card
@@ -457,7 +476,7 @@ void setup() {
   // UI要素の初期化
   initDirectModeButtons();
   initKeyModeButtons();
-  initRelativeModeButtons();
+  initInstantModeButtons();
   initSequenceModeButtons();
 
   // SDカード状態確認
@@ -714,9 +733,13 @@ void initKeyModeButtons() {
   }
 }
 
-// 相対モードのボタン配置（2行×4列）- ボタンサイズを調整
-void initRelativeModeButtons() {
-  static const int8_t deltas[8] = {-5, -3, -2, -1, +1, +2, +3, +5};
+// 相対モードのボタン配置（絶対指定モード：押した値に転調）
+// レイアウト:
+//   上段の上: 0ボタン（ボタン2個分の幅で中央）
+//   上段: +1, +2, +3, +5
+//   下段: -1, -2, -3, -5
+void initInstantModeButtons() {
+  static const int8_t values[8] = {+1, +2, +3, +5, -1, -2, -3, -5};
   static char labels[8][4];
 
   int buttonWidth = 75;
@@ -731,16 +754,24 @@ void initRelativeModeButtons() {
     int row = i / buttonsPerRow;
     int col = i % buttonsPerRow;
 
-    relativeButtons[i].x = startX + col * (buttonWidth + spacingX);
-    relativeButtons[i].y = startY + row * (buttonHeight + spacingY);
-    relativeButtons[i].w = buttonWidth;
-    relativeButtons[i].h = buttonHeight;
-    relativeButtons[i].value = deltas[i];
+    instantButtons[i].x = startX + col * (buttonWidth + spacingX);
+    instantButtons[i].y = startY + row * (buttonHeight + spacingY);
+    instantButtons[i].w = buttonWidth;
+    instantButtons[i].h = buttonHeight;
+    instantButtons[i].value = values[i];
 
-    if (deltas[i] > 0) sprintf(labels[i], "+%d", deltas[i]);
-    else sprintf(labels[i], "%d", deltas[i]);
-    relativeButtons[i].label = labels[i];
+    if (values[i] > 0) sprintf(labels[i], "+%d", values[i]);
+    else sprintf(labels[i], "%d", values[i]);
+    instantButtons[i].label = labels[i];
   }
+
+  // 0 ボタン（ボタン2個分の幅、上段の上に中央配置）
+  int zeroW = buttonWidth * 2 + spacingX;  // 155
+  int zeroH = 50;
+  instantZeroBtn.x = (SCREEN_WIDTH - zeroW) / 2;
+  instantZeroBtn.y = startY - zeroH - 8;  // 上段の上、少し隙間
+  instantZeroBtn.w = zeroW;
+  instantZeroBtn.h = zeroH;
 }
 
 // シーケンスモードのボタン配置
@@ -792,24 +823,23 @@ void initSequenceModeButtons() {
 
 void drawInterface() {
   M5.Lcd.fillScreen(BLACK);
-  
+
   // タイトル表示（左上）
+  uiFontSmall();
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 10);
-  M5.Lcd.print("MIDI Transposer");
-  
+  uiDrawL("MIDI Transposer", 10, 2);
+
   // ハードウェアボタンのガイド表示（1行目）
   M5.Lcd.setTextColor(DARKGREY);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 25);
-  M5.Lcd.print("A:AllOff  B:Range  C:Mode");
-  
+  uiDrawL("A:AllOff  B:Range  C:Mode", 10, 22);
+
   // All Notes Off状態表示（2行目左）
   M5.Lcd.setTextColor(allNotesOffEnabled ? GREEN : RED);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 40);
-  M5.Lcd.printf("AllOff: %s", allNotesOffEnabled ? "ON" : "OFF");
+  {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "AllOff: %s", allNotesOffEnabled ? "ON" : "OFF");
+    uiDrawL(buf, 10, 42);
+  }
 
   // BT接続状態表示（2行目右）
   {
@@ -820,17 +850,15 @@ void drawInterface() {
     else if (btSt == BT_CONNECTING) { btColor = YELLOW; btLabel = "BT:.."; }
     else                            { btColor = RED;     btLabel = "BT:--"; }
     M5.Lcd.setTextColor(btColor);
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setCursor(100, 40);
-    M5.Lcd.print(btLabel);
+    uiDrawL(btLabel, 130, 42);
   }
   
   if (currentMode == DIRECT_MODE) {
     drawDirectMode();
   } else if (currentMode == KEY_MODE) {
     drawKeyMode();
-  } else if (currentMode == RELATIVE_MODE) {
-    drawRelativeMode();
+  } else if (currentMode == INSTANT_MODE) {
+    drawInstantMode();
   } else {
     drawSequenceMode();
   }
@@ -839,41 +867,28 @@ void drawInterface() {
 }
 
 void drawDirectMode() {
+  uiFontLarge();
   for (int i = 0; i < 12; i++) {
     uint16_t color = transposeButtons[i] ? GREEN : DARKGREY;
     uint16_t textColor = transposeButtons[i] ? BLACK : WHITE;
-    
-    M5.Lcd.fillRect(directButtons[i].x, directButtons[i].y, 
+
+    M5.Lcd.fillRect(directButtons[i].x, directButtons[i].y,
                     directButtons[i].w, directButtons[i].h, color);
-    M5.Lcd.drawRect(directButtons[i].x, directButtons[i].y, 
+    M5.Lcd.drawRect(directButtons[i].x, directButtons[i].y,
                     directButtons[i].w, directButtons[i].h, WHITE);
-    
+
     M5.Lcd.setTextColor(textColor);
-    M5.Lcd.setTextSize(3);
-    
-    int textX = directButtons[i].x + (directButtons[i].w - strlen(directButtons[i].label) * 18) / 2;
-    int textY = directButtons[i].y + (directButtons[i].h - 24) / 2;
-    M5.Lcd.setCursor(textX, textY);
-    M5.Lcd.print(directButtons[i].label);
+    uiDrawC(directButtons[i].label,
+            directButtons[i].x, directButtons[i].y,
+            directButtons[i].w, directButtons[i].h);
   }
 }
 
 void drawKeyMode() {
+  uiFontSmall();
   M5.Lcd.setTextColor(CYAN);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 55);
-  if (majorUpperTranspose) {
-    M5.Lcd.print("Major Keys (Upper +):");
-  } else {
-    M5.Lcd.print("Major Keys (to C):");
-  }
-  
-  M5.Lcd.setCursor(10, 150);
-  if (minorUpperTranspose) {
-    M5.Lcd.print("Minor Keys (Lower -):");
-  } else {
-    M5.Lcd.print("Minor Keys (to Am):");
-  }
+  uiDrawL(majorUpperTranspose ? "Major Keys (Upper +):" : "Major Keys (to C):", 10, 55);
+  uiDrawL(minorUpperTranspose ? "Minor Keys (Lower -):" : "Minor Keys (to Am):", 10, 150);
   
   int correspondingMajorKey = -1;
   int correspondingMinorKey = -1;
@@ -898,6 +913,8 @@ void drawKeyMode() {
     }
   }
   
+  uiFontSmall();
+  M5.Lcd.setTextDatum(BC_DATUM); // bottom-center: ラベルを鍵盤下端に揃える
   for (int i = 0; i < 12; i++) {
     if (!majorKeys[i].isBlackKey) {
       uint16_t color;
@@ -908,9 +925,9 @@ void drawKeyMode() {
       M5.Lcd.fillRect(majorKeys[i].x, majorKeys[i].y, majorKeys[i].w, majorKeys[i].h, color);
       M5.Lcd.drawRect(majorKeys[i].x, majorKeys[i].y, majorKeys[i].w, majorKeys[i].h, DARKGREY);
       M5.Lcd.setTextColor(textColor);
-      M5.Lcd.setTextSize(1);
-      M5.Lcd.setCursor(majorKeys[i].x + 5, majorKeys[i].y + majorKeys[i].h - 15);
-      M5.Lcd.print(majorKeys[i].keyName);
+      M5.Lcd.drawString(majorKeys[i].keyName,
+                        majorKeys[i].x + majorKeys[i].w / 2,
+                        majorKeys[i].y + majorKeys[i].h - 4);
     }
   }
   for (int i = 0; i < 12; i++) {
@@ -923,9 +940,9 @@ void drawKeyMode() {
       M5.Lcd.fillRect(majorKeys[i].x, majorKeys[i].y, majorKeys[i].w, majorKeys[i].h, color);
       M5.Lcd.drawRect(majorKeys[i].x, majorKeys[i].y, majorKeys[i].w, majorKeys[i].h, WHITE);
       M5.Lcd.setTextColor(textColor);
-      M5.Lcd.setTextSize(1);
-      M5.Lcd.setCursor(majorKeys[i].x + 3, majorKeys[i].y + majorKeys[i].h - 15);
-      M5.Lcd.print(majorKeys[i].keyName);
+      M5.Lcd.drawString(majorKeys[i].keyName,
+                        majorKeys[i].x + majorKeys[i].w / 2,
+                        majorKeys[i].y + majorKeys[i].h - 4);
     }
   }
   for (int i = 0; i < 12; i++) {
@@ -938,9 +955,9 @@ void drawKeyMode() {
       M5.Lcd.fillRect(minorKeys[i].x, minorKeys[i].y, minorKeys[i].w, minorKeys[i].h, color);
       M5.Lcd.drawRect(minorKeys[i].x, minorKeys[i].y, minorKeys[i].w, minorKeys[i].h, DARKGREY);
       M5.Lcd.setTextColor(textColor);
-      M5.Lcd.setTextSize(1);
-      M5.Lcd.setCursor(minorKeys[i].x + 5, minorKeys[i].y + minorKeys[i].h - 15);
-      M5.Lcd.print(minorKeys[i].keyName);
+      M5.Lcd.drawString(minorKeys[i].keyName,
+                        minorKeys[i].x + minorKeys[i].w / 2,
+                        minorKeys[i].y + minorKeys[i].h - 4);
     }
   }
   for (int i = 0; i < 12; i++) {
@@ -953,58 +970,47 @@ void drawKeyMode() {
       M5.Lcd.fillRect(minorKeys[i].x, minorKeys[i].y, minorKeys[i].w, minorKeys[i].h, color);
       M5.Lcd.drawRect(minorKeys[i].x, minorKeys[i].y, minorKeys[i].w, minorKeys[i].h, WHITE);
       M5.Lcd.setTextColor(textColor);
-      M5.Lcd.setTextSize(1);
-      M5.Lcd.setCursor(minorKeys[i].x + 3, minorKeys[i].y + minorKeys[i].h - 15);
-      M5.Lcd.print(minorKeys[i].keyName);
+      M5.Lcd.drawString(minorKeys[i].keyName,
+                        minorKeys[i].x + minorKeys[i].w / 2,
+                        minorKeys[i].y + minorKeys[i].h - 4);
     }
   }
 }
 
-// 相対モード描画
-void drawRelativeMode() {
+// 相対モード描画（絶対指定モード：押した値に直接転調）
+void drawInstantMode() {
   // 説明
+  uiFontSmall();
   M5.Lcd.setTextColor(CYAN);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(10, 55);
-  M5.Lcd.print("Relative Mode: tap to add/subtract");
+  uiDrawL("Instant Mode: tap to set value", 10, 55);
 
-  // 現在の転調値を大きく中央表示
-  M5.Lcd.setTextColor(YELLOW);
-  M5.Lcd.setTextSize(6); // 大きめ
-  char buf[8];
-  if (transposeValue > 0) sprintf(buf, "+%d", transposeValue);
-  else sprintf(buf, "%d", transposeValue);
+  // 0 ボタン（上段の上、ボタン2個分幅）
+  bool zeroActive = (transposeValue == 0);
+  uint16_t zeroColor = zeroActive ? GREEN : DARKGREY;
+  uint16_t zeroTxt   = zeroActive ? BLACK : WHITE;
+  M5.Lcd.fillRect(instantZeroBtn.x, instantZeroBtn.y,
+                  instantZeroBtn.w, instantZeroBtn.h, zeroColor);
+  M5.Lcd.drawRect(instantZeroBtn.x, instantZeroBtn.y,
+                  instantZeroBtn.w, instantZeroBtn.h, WHITE);
+  uiFontHuge();
+  M5.Lcd.setTextColor(zeroTxt);
+  uiDrawC("0", instantZeroBtn.x, instantZeroBtn.y,
+          instantZeroBtn.w, instantZeroBtn.h);
 
-  // 文字幅・高さ（標準6x8フォント × TextSize）
-  const int charW = 6 * 6;  // = 36px
-  const int charH = 8 * 6;  // = 48px
-  int tw = strlen(buf) * charW;
-
-  // Xは左右中央
-  int tx = (SCREEN_WIDTH - tw) / 2;
-  if (tx < 0) tx = 0;
-
-  // Yは「ボタン最上段の上半分」の中央に置く
-  int topAreaBottom = relativeButtons[0].y;           // ボタン上端
-  int ty = (topAreaBottom - charH) / 2;               // 上半分の中央
-  if (ty < 65) ty = 65;                               // 上部ラベルと最低余白を確保
-
-  M5.Lcd.setCursor(tx, ty);
-  M5.Lcd.print(buf);
-
-  // ボタン群
+  // +1,+2,+3,+5 / -1,-2,-3,-5 ボタン群
+  uiFontLarge();
   for (int i = 0; i < 8; i++) {
-    uint16_t color = DARKGREY;
-    uint16_t border = WHITE;
-    uint16_t txt = WHITE;
-    M5.Lcd.fillRect(relativeButtons[i].x, relativeButtons[i].y, relativeButtons[i].w, relativeButtons[i].h, color);
-    M5.Lcd.drawRect(relativeButtons[i].x, relativeButtons[i].y, relativeButtons[i].w, relativeButtons[i].h, border);
+    bool active = (instantButtons[i].value == transposeValue);
+    uint16_t color = active ? GREEN : DARKGREY;
+    uint16_t txt   = active ? BLACK : WHITE;
+    M5.Lcd.fillRect(instantButtons[i].x, instantButtons[i].y,
+                    instantButtons[i].w, instantButtons[i].h, color);
+    M5.Lcd.drawRect(instantButtons[i].x, instantButtons[i].y,
+                    instantButtons[i].w, instantButtons[i].h, WHITE);
     M5.Lcd.setTextColor(txt);
-    M5.Lcd.setTextSize(3);
-    int textX = relativeButtons[i].x + (relativeButtons[i].w - (int)strlen(relativeButtons[i].label) * (6*3)) / 2; // 6*3=18
-    int textY = relativeButtons[i].y + (relativeButtons[i].h - (8*3)) / 2;                                        // 8*3=24
-    M5.Lcd.setCursor(textX, textY);
-    M5.Lcd.print(relativeButtons[i].label);
+    uiDrawC(instantButtons[i].label,
+            instantButtons[i].x, instantButtons[i].y,
+            instantButtons[i].w, instantButtons[i].h);
   }
 }
 
@@ -1016,47 +1022,38 @@ void drawSequenceMode() {
                   seqPatLeftBtn.w, seqPatLeftBtn.h, BLUE);
   M5.Lcd.drawRect(seqPatLeftBtn.x, seqPatLeftBtn.y,
                   seqPatLeftBtn.w, seqPatLeftBtn.h, WHITE);
+  uiFontLarge();
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(seqPatLeftBtn.x + (seqPatLeftBtn.w - 18) / 2,
-                   seqPatLeftBtn.y + (seqPatLeftBtn.h - 24) / 2);
-  M5.Lcd.print("<");
+  uiDrawC("<", seqPatLeftBtn.x, seqPatLeftBtn.y, seqPatLeftBtn.w, seqPatLeftBtn.h);
 
   // パターン番号表示
   int patDispX = seqPatLeftBtn.x + seqPatLeftBtn.w + 3;
   int patDispW = seqPatRightBtn.x - patDispX - 3;
   M5.Lcd.fillRect(patDispX, seqPatLeftBtn.y, patDispW, seqPatLeftBtn.h, NAVY);
   M5.Lcd.drawRect(patDispX, seqPatLeftBtn.y, patDispW, seqPatLeftBtn.h, WHITE);
-  M5.Lcd.setTextColor(YELLOW);
-  M5.Lcd.setTextSize(2);
   char patStr[20];
   snprintf(patStr, sizeof(patStr), "Pat %02d/%02d", seqCurrentPattern + 1, SEQ_PATTERN_COUNT);
-  int patTextW = strlen(patStr) * 12;
-  M5.Lcd.setCursor(patDispX + (patDispW - patTextW) / 2,
-                   seqPatLeftBtn.y + (seqPatLeftBtn.h - 16) / 2);
-  M5.Lcd.print(patStr);
+  uiFontMedium();
+  M5.Lcd.setTextColor(YELLOW);
+  uiDrawC(patStr, patDispX, seqPatLeftBtn.y, patDispW, seqPatLeftBtn.h);
 
   // 右矢印ボタン
   M5.Lcd.fillRect(seqPatRightBtn.x, seqPatRightBtn.y,
                   seqPatRightBtn.w, seqPatRightBtn.h, BLUE);
   M5.Lcd.drawRect(seqPatRightBtn.x, seqPatRightBtn.y,
                   seqPatRightBtn.w, seqPatRightBtn.h, WHITE);
+  uiFontLarge();
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(seqPatRightBtn.x + (seqPatRightBtn.w - 18) / 2,
-                   seqPatRightBtn.y + (seqPatRightBtn.h - 24) / 2);
-  M5.Lcd.print(">");
+  uiDrawC(">", seqPatRightBtn.x, seqPatRightBtn.y, seqPatRightBtn.w, seqPatRightBtn.h);
 
   // SAVEボタン
   M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
                   seqSaveBtn.w, seqSaveBtn.h, RED);
   M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
                   seqSaveBtn.w, seqSaveBtn.h, WHITE);
+  uiFontMedium();
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setCursor(seqSaveBtn.x + (seqSaveBtn.w - 48) / 2,
-                   seqSaveBtn.y + (seqSaveBtn.h - 16) / 2);
-  M5.Lcd.print("SAVE");
+  uiDrawC("SAVE", seqSaveBtn.x, seqSaveBtn.y, seqSaveBtn.w, seqSaveBtn.h);
 
   // 6つのステップスロット（プリセットモードと同様のレイアウト）
   for (int i = 0; i < SEQ_STEP_COUNT; i++) {
@@ -1085,12 +1082,11 @@ void drawSequenceMode() {
     if (value > 0) sprintf(valueStr, "+%d", value);
     else sprintf(valueStr, "%d", value);
 
+    uiFontMedium();
     M5.Lcd.setTextColor(slotTextColor);
-    M5.Lcd.setTextSize(3);
-    int vx = seqSteps[i].slotX + (seqSteps[i].slotW - (int)strlen(valueStr) * 18) / 2;
-    int vy = seqSteps[i].slotY + (seqSteps[i].slotH - 24) / 2;
-    M5.Lcd.setCursor(vx, vy);
-    M5.Lcd.print(valueStr);
+    uiDrawC(valueStr,
+            seqSteps[i].slotX, seqSteps[i].slotY,
+            seqSteps[i].slotW, seqSteps[i].slotH);
 
     // 下ボタン（▼）
     M5.Lcd.fillRect(seqSteps[i].downBtnX, seqSteps[i].downBtnY,
@@ -1107,44 +1103,39 @@ void drawSequenceMode() {
                   seqStepLeftBtn.w, seqStepLeftBtn.h, BLUE);
   M5.Lcd.drawRect(seqStepLeftBtn.x, seqStepLeftBtn.y,
                   seqStepLeftBtn.w, seqStepLeftBtn.h, WHITE);
+  uiFontLarge();
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(seqStepLeftBtn.x + (seqStepLeftBtn.w - 18) / 2,
-                   seqStepLeftBtn.y + (seqStepLeftBtn.h - 24) / 2);
-  M5.Lcd.print("<");
+  uiDrawC("<", seqStepLeftBtn.x, seqStepLeftBtn.y, seqStepLeftBtn.w, seqStepLeftBtn.h);
 
   M5.Lcd.fillRect(seqStepRightBtn.x, seqStepRightBtn.y,
                   seqStepRightBtn.w, seqStepRightBtn.h, BLUE);
   M5.Lcd.drawRect(seqStepRightBtn.x, seqStepRightBtn.y,
                   seqStepRightBtn.w, seqStepRightBtn.h, WHITE);
   M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.setTextSize(3);
-  M5.Lcd.setCursor(seqStepRightBtn.x + (seqStepRightBtn.w - 18) / 2,
-                   seqStepRightBtn.y + (seqStepRightBtn.h - 24) / 2);
-  M5.Lcd.print(">");
+  uiDrawC(">", seqStepRightBtn.x, seqStepRightBtn.y, seqStepRightBtn.w, seqStepRightBtn.h);
 }
 
 void updateStatusArea() {
-  // 右上のステータス表示エリア（x座標を右にずらす）
-  M5.Lcd.fillRect(200, 10, 115, 30, BLACK);  // x座標を155→200に変更、幅を165→115に調整
+  // 右上のステータス表示エリア
+  M5.Lcd.fillRect(190, 0, 130, 40, BLACK);
 
+  uiFontSmall();
   M5.Lcd.setTextColor(YELLOW);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(205, 15);  // x座標を155→205に変更
 
+  char buf[32];
   if (transposeValue > 0) {
-    M5.Lcd.printf("Transpose: +%d", transposeValue);
+    snprintf(buf, sizeof(buf), "Transpose: +%d", transposeValue);
   } else if (transposeValue < 0) {
-    M5.Lcd.printf("Transpose: %d", transposeValue);
+    snprintf(buf, sizeof(buf), "Transpose: %d", transposeValue);
   } else {
-    M5.Lcd.print("Transpose: 0");
+    snprintf(buf, sizeof(buf), "Transpose: 0");
   }
+  uiDrawL(buf, 195, 2);
 
   // MIDI統計情報（2行目右）
   M5.Lcd.setTextColor(DARKGREY);
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(205, 28);  // x座標を155→205に変更
-  M5.Lcd.printf("I:%lu O:%lu", midiInCount, midiOutCount);
+  snprintf(buf, sizeof(buf), "I:%lu O:%lu", midiInCount, midiOutCount);
+  uiDrawL(buf, 195, 22);
 }
 
 // フットスイッチによる転調値選択処理
@@ -1222,7 +1213,7 @@ void processFootPedal() {
         }
         transposeValues = values;
         numValues = 12;
-      } else { // RELATIVE_MODE
+      } else { // INSTANT_MODE
         // 相対モードでは-5から+6の範囲を使用
         for (int i = 0; i < 12; i++) {
           values[i] = i - 5; // -5 to +6
@@ -1275,7 +1266,7 @@ void processFootPedal() {
         selectedMinorKey = -1;
         needFullRedraw = true;
       } else {
-        // RelativeModeの場合、画面を更新
+        // InstantModeの場合、画面を更新
         needFullRedraw = true;
       }
     }
@@ -1316,20 +1307,20 @@ void processHardwareButtons() {
       selectedMinorKey = -1;
       needFullRedraw = true;
     } else {
-      // RELATIVE_MODE, SEQUENCE_MODE: 何もしない
+      // INSTANT_MODE, SEQUENCE_MODE: 何もしない
     }
     lastButtonCheck = now;
     Serial.println("Range/Mode toggled (B)");
   }
 
-  // 右ボタン（C）: モード切り替え（DIRECT→KEY→RELATIVE→PRESET→…）
+  // 右ボタン（C）: モード切り替え（DIRECT→KEY→INSTANT→SEQUENCE→…）
   if (M5.BtnC.wasPressed()) {
     sendAllNotesOff();
     delay(10);
 
     if (currentMode == DIRECT_MODE) currentMode = KEY_MODE;
-    else if (currentMode == KEY_MODE) currentMode = RELATIVE_MODE;
-    else if (currentMode == RELATIVE_MODE) currentMode = SEQUENCE_MODE;
+    else if (currentMode == KEY_MODE) currentMode = INSTANT_MODE;
+    else if (currentMode == INSTANT_MODE) currentMode = SEQUENCE_MODE;
     else currentMode = DIRECT_MODE;
 
     if (currentMode == DIRECT_MODE) {
@@ -1339,9 +1330,9 @@ void processHardwareButtons() {
       selectedMajorKey = -1;
       selectedMinorKey = -1;
       Serial.println("KeyMode: All keys deselected");
-    } else if (currentMode == RELATIVE_MODE) {
+    } else if (currentMode == INSTANT_MODE) {
       // 相対モード：特に選択状態は持たない
-      Serial.println("RelativeMode entered");
+      Serial.println("InstantMode entered");
     } else {
       // シーケンスモード：現在ステップの転調値を適用
       handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
@@ -1350,7 +1341,7 @@ void processHardwareButtons() {
 
     needFullRedraw = true;
     lastButtonCheck = now;
-    const char* modeNames[] = {"DIRECT", "KEY", "RELATIVE", "SEQUENCE"};
+    const char* modeNames[] = {"DIRECT", "KEY", "INSTANT", "SEQUENCE"};
     Serial.printf("Mode: %s, Transpose: %d (maintained)\n",
                   modeNames[currentMode], transposeValue);
   }
@@ -1424,8 +1415,8 @@ void processTouch() {
     processDirectModeTouch(pos);
   } else if (currentMode == KEY_MODE) {
     processKeyModeTouch(pos);
-  } else if (currentMode == RELATIVE_MODE) {
-    processRelativeModeTouch(pos);
+  } else if (currentMode == INSTANT_MODE) {
+    processInstantModeTouch(pos);
   } else {
     processSequenceModeTouch(pos);
   }
@@ -1507,13 +1498,21 @@ void processKeyModeTouch(TouchPoint_t pos) {
   }
 }
 
-// 相対モードのタッチ処理
-void processRelativeModeTouch(TouchPoint_t pos) {
+// 相対モードのタッチ処理（絶対指定：押した値に転調）
+void processInstantModeTouch(TouchPoint_t pos) {
+  // 0 ボタン
+  if (pos.x >= instantZeroBtn.x && pos.x <= instantZeroBtn.x + instantZeroBtn.w &&
+      pos.y >= instantZeroBtn.y && pos.y <= instantZeroBtn.y + instantZeroBtn.h) {
+    handleTransposeChange(0);
+    needFullRedraw = true;
+    return;
+  }
+
+  // ±1,2,3,5 ボタン
   for (int i = 0; i < 8; i++) {
-    if (pos.x >= relativeButtons[i].x && pos.x <= relativeButtons[i].x + relativeButtons[i].w &&
-        pos.y >= relativeButtons[i].y && pos.y <= relativeButtons[i].y + relativeButtons[i].h) {
-      int8_t delta = relativeButtons[i].value;
-      handleTransposeChange(transposeValue + delta); // クランプは内側で実施
+    if (pos.x >= instantButtons[i].x && pos.x <= instantButtons[i].x + instantButtons[i].w &&
+        pos.y >= instantButtons[i].y && pos.y <= instantButtons[i].y + instantButtons[i].h) {
+      handleTransposeChange(instantButtons[i].value);
       needFullRedraw = true;
       return;
     }
@@ -1553,10 +1552,9 @@ void processSequenceModeTouch(TouchPoint_t pos) {
                       seqSaveBtn.w, seqSaveBtn.h, GREEN);
       M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
                       seqSaveBtn.w, seqSaveBtn.h, WHITE);
+      uiFontMedium();
       M5.Lcd.setTextColor(BLACK);
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.setCursor(seqSaveBtn.x + 18, seqSaveBtn.y + 3);
-      M5.Lcd.print("OK!");
+      uiDrawC("OK!", seqSaveBtn.x, seqSaveBtn.y, seqSaveBtn.w, seqSaveBtn.h);
       delay(500);
     } else {
       // 保存失敗フィードバック
@@ -1564,10 +1562,9 @@ void processSequenceModeTouch(TouchPoint_t pos) {
                       seqSaveBtn.w, seqSaveBtn.h, ORANGE);
       M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
                       seqSaveBtn.w, seqSaveBtn.h, WHITE);
+      uiFontMedium();
       M5.Lcd.setTextColor(BLACK);
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.setCursor(seqSaveBtn.x + 10, seqSaveBtn.y + 3);
-      M5.Lcd.print("ERR!");
+      uiDrawC("ERR!", seqSaveBtn.x, seqSaveBtn.y, seqSaveBtn.w, seqSaveBtn.h);
       delay(500);
     }
     needFullRedraw = true;
