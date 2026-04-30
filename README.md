@@ -1,13 +1,31 @@
-# M5Core-MIDITransposerBT
+# M5Core-MIDIXposeFilBTUM
 
-M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理ツールです。  
-従来の転調機能に加えて、`MIDI Manager` として `FILTER` と `MAPPER` を追加しています。
+M5Core2 + M5 Unit MIDI (SAM2695) を使った **MIDI 演奏機 / トランスポーザー / メッセージ管理ツール** です。  
+起動直後は `PLAY` モード (Unit MIDI 内蔵 GM 音源を直接鳴らす) に入り、`C` 長押しで転調機能・MIDI 加工機能の各グループに移れます。
 
-現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](/D:/M5/M5Core2-MIDIXposeFilBT/M5Core2-MIDIXposeFilBT.ino) です。
+現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](/D:/M5/M5Core2-MIDIXposeFilBTUM/M5Core2-MIDIXposeFilBT.ino) です。
 
-## 概要
+## ハードウェア
 
-入力された MIDI メッセージに対して、次の順序で処理します。
+- **本体**: M5Stack Core2
+- **音源**: M5 Unit MIDI (SAM2695)
+- **接続**: Core2 の **Port A (Grove)** に Unit MIDI を挿す
+- **UART**: G33=RX / G32=TX, 31250 bps (`Serial2`)
+- **注意**: 起動時に `Wire.end()` を呼んで Port A の I2C を解放するため、Port A 上の他の I2C デバイスは併用できません。
+
+## 概要 — 演奏 (PLAY) モード
+
+起動直後の基本モードです。Unit MIDI 内蔵 GM 音源を直接鳴らせます。
+
+- 外部 MIDI キーボードから届いた Note は、`FILTER / MAPPER / Transpose` を経由せずそのまま発音されます。
+- 画面の音色名バーをタップすると 128 音色から選択できます (Page 切替対応)。
+- `VOL- / VOL+` で CC#7 を、`PRG- / PRG+` で Program を、`PB- / PB+` で Pitch Bend を、`SUS` で CC#64 を、`INIT` で再初期化を送れます。
+- `TEST PHRASE` を押すと、現在選択中の音色で **ドビュッシー「アラベスク第1番」冒頭** を試聴できます。
+- `PLAY` 画面に入った時点で Roland `GS Reset` を送り、現在の `Volume` / `Program` / `Pitch Bend` / `Sustain` を再送します。
+
+## 概要 — 転調 / MIDI 管理
+
+`PLAY` 以外のモードでは、入力された MIDI メッセージに対して次の順序で処理します。
 
 1. `FILTER`
 2. `MAPPER`
@@ -17,9 +35,31 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 `FILTER` と `MAPPER` はそれぞれ独立して `BYPASS` / `ACTIVE` を切り替えられます。  
 両方を `BYPASS` にすれば、従来どおりの低遅延な転調処理だけを使えます。
 
+`Serial2` を関数で包むような変更は、速度向上や低遅延化にはほぼ寄与しません。  
+今の実装でも UART の直接送受信が最短経路なので、性能面では現状維持で問題ありません。  
+ラッパー化の主な利点は、将来別の MIDI ハードへ差し替えるときの保守性だけです。
+
 ## モード構成
 
-画面は 2 階層構成です。
+画面は `演奏`、`転調`、`MIDI 管理` の 3 つを軸にした構成です。  
+`C` 長押しでグループを巡回します: `演奏 -> 転調 -> MIDI 管理 -> 演奏 ...`
+
+### 0. 演奏モード (PLAY) — 起動直後の基本モード
+
+Unit MIDI 内蔵 SAM2695 を直接鳴らすモードです。
+
+操作:
+
+- 画面音色名バー: 128 音色ピッカーを開く
+- `VOL- / VOL+`: CC#7 を 8 ステップ単位 (0–127)
+- `PRG- / PRG+`: Program 番号を 1 つ前後
+- `PB- / PB+`: Pitch Bend を 256 ステップ単位 (0–16383, 中央 8192)
+- `SUS`: CC#64 (Sustain) を ON / OFF
+- `INIT`: GS Reset → Volume / Program / Bend / Sustain を再送
+- `TEST PHRASE`: アラベスク冒頭を演奏 (現在の音色で発音)
+- `B`: 初期化 (`INIT` と同じ)
+- `C` 短押し: パニック(All Notes Off を全 16ch に送出)
+- `C` 長押し: `演奏 -> 転調`
 
 ### 1. 転調グループ
 
@@ -32,13 +72,17 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 
 ### 2. MIDI 管理グループ
 
-長押し `C` で転調グループと往復します。  
+長押し `C` で `転調 -> MIDI 管理` に移ります。  
 短押し `C` で次を巡回します。
 
 - `FILTER`
 - `MAPPER`
 
-長押し `C` はグループ切替だけを行い、転調側へ戻るときは最後に使っていた転調サブモードへ戻ります。
+M5 Unit MIDI を接続している場合は、ここで処理した MIDI をそのまま Unit MIDI から発音できます。  
+MIDI フィルタやマッパーを使いながら、実音を確認できます。
+
+長押し `C` は `演奏 -> 転調 -> MIDI 管理 -> 演奏` の順で移動します。  
+転調側へ戻るときは最後に使っていた転調サブモードへ戻ります。
 
 ## ハードウェアボタン
 
@@ -46,7 +90,7 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 
 - `A`: All Notes Off の有効/無効切替
 - `C` 短押し: 現在グループ内の次モードへ
-- `C` 長押し: `転調グループ <-> MIDI 管理グループ`
+- `C` 長押し: `演奏 -> 転調 -> MIDI 管理 -> 演奏`
 
 ### 転調グループ中の `B`
 
@@ -240,12 +284,21 @@ MIDI メッセージの再割り当て/変換を行います。
 
 ## ビルドと書き込み
 
-使用しているボード指定:
+`arduino-cli` はスケッチ名とフォルダ名の一致を要求するため、本リポジトリでは
+ビルド用のサブディレクトリにコピーしてからコンパイルしています。
 
 ```bash
-arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
-arduino-cli upload -p COM4 --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
+# 例: Git Bash 上での 1 セット
+mkdir -p /tmp/sketch_build/M5Core2-MIDIXposeFilBTUM
+cp M5Core2-MIDIXposeFilBT.ino /tmp/sketch_build/M5Core2-MIDIXposeFilBTUM/M5Core2-MIDIXposeFilBTUM.ino
+cp -r src /tmp/sketch_build/M5Core2-MIDIXposeFilBTUM/
+
+arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBTUM
+arduino-cli upload  -p COM10 --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBTUM
 ```
+
+`-p` オプションには本機が見えている COM ポート (USB) を指定します
+(`arduino-cli board list` で確認可能)。
 
 ## USB シリアルコマンド
 
@@ -264,12 +317,14 @@ PC から USB シリアルで本体を操作できます。
 - `BUTTON C`
 - `BUTTON C LONG`
 - `TOUCH x y`
+- `MODE PLAY`
 - `MODE DIRECT`
 - `MODE KEY`
 - `MODE INSTANT`
 - `MODE SEQUENCE`
 - `MODE FILTER`
 - `MODE MAPPER`
+- `GROUP PLAY`
 - `GROUP TRANSPOSE`
 - `GROUP MIDI`
 - `SET TRANSPOSE n`

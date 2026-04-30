@@ -197,7 +197,7 @@
   <h1>M5Core2 MIDI Transposer + MIDI Manager<br>OWAMIDICON</h1>
   <h2>転調機能と MIDI メッセージ管理を一台で行うパフォーマンスツール<br>Programmed by Owa Higashi (おわ/尾和)</h2>
   <div class="meta">
-    Version: 2026-04 / 対応ハード: <b>M5Stack Core2</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b>
+    Version: 2026-05 / 対応ハード: <b>M5Stack Core2</b> + <b>M5 Unit MIDI (SAM2695)</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b>
   </div>
 </header>
 
@@ -208,6 +208,7 @@
   <h3>目次</h3>
   <ol>
     <li><a href="#about">この製品でできること</a></li>
+    <li><a href="#mode-play">演奏 (PLAY) モード <span class="tag short">起動直後</span></a></li>
     <li><a href="#hardware">本体の見方とボタン</a></li>
     <li><a href="#screen-layout">共通画面の見方</a></li>
     <li><a href="#operation">基本操作のルール</a></li>
@@ -230,10 +231,17 @@
 <section id="about">
   <h1 class="section-title">1. この製品でできること</h1>
   <p>
-    本機は、<b>M5Stack Core2</b> をベースにした MIDI トランスポーザーです。
-    入ってきた MIDI を、用途に合わせて加工しながら出力できます。
+    本機は、<b>M5Stack Core2</b> + <b>M5 Unit MIDI (SAM2695)</b> をベースにした
+    <b>MIDI 演奏機 / トランスポーザー</b> です。
+    起動直後は <b>演奏 (PLAY) モード</b> に入り、Unit MIDI 内蔵の GM 音源から音を鳴らせます。
+    <span class="tag long">C 長押し</span> で、転調機能や MIDI 加工機能を持つ別グループに移れます。
   </p>
-  <div class="grid cols-3">
+  <div class="grid cols-4">
+    <div class="card">
+      <h3>演奏 (PLAY) <span class="tag short">新規</span></h3>
+      <p>外部 MIDI キーボードから入った Note を <b>そのまま Unit MIDI で発音</b> します。
+        画面で 128 音色から選択でき、Volume / Program / Pitch Bend / Sustain も操作できます。</p>
+    </div>
     <div class="card">
       <h3>転調 (Transpose)</h3>
       <p>演奏中のキーを半音単位でずらして出力します。<br>
@@ -255,12 +263,87 @@
     本機の処理順序は <code>FILTER → MAPPER → Transpose → MIDI OUT</code> です。
     <b>FILTER と MAPPER はそれぞれ独立して BYPASS / ACTIVE が切り替えられます。</b>
     両方を BYPASS にすれば、従来どおりの低遅延な転調処理だけが動きます。
+    <b>PLAY モード</b>のときは外部音源を経由せず、Unit MIDI 内部の SAM2695 が直接発音します。
+  </div>
+  <div class="callout">
+    <b class="label">接続</b>
+    M5 Unit MIDI は M5Core2 の <b>Port A</b> (Grove) に挿します。<br>
+    内部では Port A の I2C を解放した上で UART2 (G33=RX / G32=TX, 31250 bps) として再構成しています。
+    Port A 上の他の I2C デバイスは併用できません。
+  </div>
+</section>
+
+<!-- ===== PLAY ===== -->
+<section id="mode-play">
+  <h1 class="section-title">2. 演奏 (PLAY) モード</h1>
+  <p>
+    起動直後の <b>基本モード</b> です。M5 Unit MIDI 内蔵の SAM2695 (GM 音源) を直接鳴らします。
+    外部 MIDI キーボードを接続すれば、押した鍵盤の音がそのまま Unit MIDI から鳴ります。
+    キーボードがない場合でも、画面下の <code>TEST PHRASE</code> を押せばドビュッシー「アラベスク第1番」の冒頭が試聴できます。
+  </p>
+
+  <div class="pair">
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/00-play.png" alt="PLAY 画面 (メイン)">
+      </div>
+      <figcaption>図 2-1: PLAY モードのメイン画面</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/00-play-picker.png" alt="PLAY 画面 (音色ピッカー)">
+      </div>
+      <figcaption>図 2-2: 音色名バーをタップした 128 音色ピッカー</figcaption>
+    </figure>
+  </div>
+
+  <h3>画面の構成</h3>
+  <table>
+    <tr><th>場所</th><th>内容</th></tr>
+    <tr><td>2 段目</td><td><code>SAM2695 Live</code> + 主要パラメータ (<code>VOL</code> / <code>PRG</code> / <code>PB</code>)</td></tr>
+    <tr><td>3 段目</td><td>受信中チャンネル <code>CH</code> / <code>SUS</code> / 送信カウンタ <code>OUT</code></td></tr>
+    <tr><td>音色名バー</td><td>現在の Program 番号と GM 音色名 (タップで一覧ピッカーを開く)</td></tr>
+    <tr><td>ボタン上段</td><td><code>VOL-</code> / <code>VOL+</code> / <code>PRG-</code> / <code>PRG+</code></td></tr>
+    <tr><td>ボタン下段</td><td><code>PB-</code> / <code>PB+</code> / <code>SUS</code> (サスティンON/OFF) / <code>INIT</code> (再初期化)</td></tr>
+    <tr><td>最下段</td><td><code>TEST PHRASE</code> ボタン (アラベスク冒頭)</td></tr>
+  </table>
+
+  <h3>操作早見表</h3>
+  <table>
+    <tr><th>操作</th><th>働き</th></tr>
+    <tr><td>音色名バーをタップ</td><td>128 音色ピッカーを開く (<code>&lt; PREV</code> / <code>NEXT &gt;</code> / <code>CLOSE</code>)</td></tr>
+    <tr><td><code>VOL-</code> / <code>VOL+</code></td><td>CC#7 を 8 ステップ単位で増減 (0–127)</td></tr>
+    <tr><td><code>PRG-</code> / <code>PRG+</code></td><td>音色を 1 つ前 / 後ろへ</td></tr>
+    <tr><td><code>PB-</code> / <code>PB+</code></td><td>Pitch Bend を 256 ステップ単位で増減 (0–16383, 中央=8192)</td></tr>
+    <tr><td><code>SUS</code></td><td>CC#64 サスティンを ON / OFF トグル</td></tr>
+    <tr><td><code>INIT</code></td><td>GS Reset → Volume / Program / Bend / Sustain を初期値で送り直す</td></tr>
+    <tr><td><code>TEST PHRASE</code></td><td>現在の音色でアラベスク冒頭を演奏</td></tr>
+    <tr><td><span class="btn-icon B">B</span></td><td><code>INIT</code> と同じ (再初期化)</td></tr>
+    <tr><td><span class="btn-icon C">C</span> 短押し</td><td>パニック (All Notes Off を全 16ch に送出)</td></tr>
+    <tr><td><span class="btn-icon C">C</span> 長押し</td><td>転調グループへ移動 (最後に開いていた転調サブモードへ)</td></tr>
+  </table>
+
+  <h3>外部 MIDI キーボードとの連携</h3>
+  <p>
+    Unit MIDI に MIDI IN ジャックがある別の MIDI インタフェースを併用しているか、
+    Bluetooth/USB MIDI 経由で本機に Note On が届くと、PLAY モードでは <b>FILTER / MAPPER / Transpose を経由せずそのまま発音</b> します。
+    受信したチャンネルは自動で <code>CH</code> 表示に反映され、その後の Volume / Program / Bend / Sustain 操作は同じチャンネルへ送られます。
+  </p>
+
+  <div class="callout tip">
+    <b class="label">音が出ないとき</b>
+    <ol style="margin:.4em 0 0 1.2em">
+      <li>Unit MIDI が <b>Port A</b> (Grove) に挿さっていることを確認</li>
+      <li><code>INIT</code> を押して Volume / Program / Pitch Bend を既定値に戻す</li>
+      <li><code>TEST PHRASE</code> を押し、Unit MIDI のヘッドホン端子から音が出るか確認</li>
+      <li>それでも無音なら、Port A に他の I2C デバイスを挿していないか確認 (UART と排他)</li>
+    </ol>
   </div>
 </section>
 
 <!-- ===== Hardware ===== -->
 <section id="hardware">
-  <h1 class="section-title">2. 本体の見方とボタン</h1>
+  <h1 class="section-title">3. 本体の見方とボタン</h1>
   <p>
     本体の前面下部(液晶の下)には 3 つのタッチボタン
     <span class="btn-icon A">A</span><span class="btn-icon B">B</span><span class="btn-icon C">C</span>
@@ -293,7 +376,7 @@
 
 <!-- ===== Screen layout ===== -->
 <section id="screen-layout">
-  <h1 class="section-title">3. 共通画面の見方</h1>
+  <h1 class="section-title">4. 共通画面の見方</h1>
   <p>
     すべての画面の最上段には <b>共通のステータス行</b> が表示されます。
     このステータス行の意味さえ覚えれば、どの画面でも迷いません。
@@ -329,22 +412,29 @@
 
 <!-- ===== Operation ===== -->
 <section id="operation">
-  <h1 class="section-title">4. 基本操作のルール</h1>
+  <h1 class="section-title">5. 基本操作のルール</h1>
 
-  <h2>4.1 画面の階層</h2>
-  <p>本機の画面は 2 階層になっています。</p>
+  <h2>5.1 画面の階層</h2>
+  <p>本機の画面は 3 つのグループに分かれます。</p>
   <div class="flow">
-    <div class="node in">転調グループ</div>
-    <div class="arrow">⇄</div>
+    <div class="node in">演奏 (PLAY)</div>
+    <div class="arrow">→</div>
+    <div class="node">転調グループ</div>
+    <div class="arrow">→</div>
     <div class="node out">MIDI 管理グループ</div>
+    <div class="arrow">↻</div>
   </div>
   <p>
-    <span class="tag long">C 長押し</span> でグループを切り替えます。<br>
-    <span class="tag short">C 短押し</span> で同じグループ内のモードを順送りします。
+    <span class="tag long">C 長押し</span> でグループを巡回します (PLAY → 転調 → MIDI 管理 → PLAY)。<br>
+    <span class="tag short">C 短押し</span> で同じグループ内のモードを順送りします (PLAY モードでは Panic として動作)。
   </p>
 
-  <h2>4.2 グループ内のモード遷移</h2>
-  <div class="grid cols-2">
+  <h2>5.2 グループ内のモード遷移</h2>
+  <div class="grid cols-3">
+    <div class="card">
+      <h3>演奏グループ</h3>
+      <p style="font-size:1.05rem"><b>PLAY</b> 単独 (C 短押しはパニック)</p>
+    </div>
     <div class="card">
       <h3>転調グループ (C 短押しで巡回)</h3>
       <p style="font-size:1.05rem">
@@ -365,20 +455,20 @@
 
 <!-- ===== Foot Pedal ===== -->
 <section id="footpedal">
-  <h1 class="section-title">5. Bluetooth HID フットペダル</h1>
+  <h1 class="section-title">6. Bluetooth HID フットペダル</h1>
   <p>
     本機は <b>Bluetooth HID キーボード型のフットペダル</b> に対応しており、
     手を使わずに転調操作ができます。鍵盤を弾いている最中でも、足元で転調メニューを左右に動かして次の転調値へ切り替えられます。
   </p>
 
-  <h2>5.1 動作確認済みハード</h2>
+  <h2>6.1 動作確認済みハード</h2>
   <div class="callout">
     <b class="label">対応機種</b>
     動作保証を行っているのは <b>STRICH 社 SPT-10</b> のみです。
     他の Bluetooth HID キーボード型フットペダルでも動く可能性はありますが、BLEタイプは動作しません。
   </div>
 
-  <h2>5.2 ペアリングと再接続</h2>
+  <h2>6.2 ペアリングと再接続</h2>
   <p>
     一度ペアリングすれば、本機の電源を切っても <b>bond 情報 (リンクキー) は本体内に保持</b> されます。
     次回からは、本機を起動 → ペダル (SPT-10) を電源 ON するだけで、約 20〜30 秒で <b>自動的に再接続</b> します。
@@ -399,7 +489,7 @@
     その場合は、SPT-10が再ペアリング状態になり、ペアリングが終了するまで待ってください。この時、ペダル操作が必要となる場合があります。
   </div>
 
-  <h2>5.3 ペダルの動作</h2>
+  <h2>6.3 ペダルの動作</h2>
   <p>
     SPT-10 の <b>左ペダル</b> と <b>右ペダル</b> がそれぞれ「左へ」「右へ」のメニュー移動として働きます。
     どのモードでも基本は <b>転調メニュー上の左右移動</b> ですが、いまどの画面を開いているかによって移動先が変わります。
@@ -423,7 +513,7 @@
 
 <!-- ===== DIRECT ===== -->
 <section id="mode-direct">
-  <h1 class="section-title">6. DIRECT モード</h1>
+  <h1 class="section-title">7. DIRECT モード</h1>
   <p>
     画面に並ぶ <b>12 個のボタンを直接タップ</b> して転調値を決める、最も直感的なモードです。
   </p>
@@ -454,7 +544,7 @@
 
 <!-- ===== KEY ===== -->
 <section id="mode-key">
-  <h1 class="section-title">7. KEY モード</h1>
+  <h1 class="section-title">8. KEY モード</h1>
   <p>
     <b>キー名</b> (C, D, E… / Am, Bm, …) で転調値を決めるモードです。
     「曲を G に下げて」と言われたとき、<b>G の鍵盤を押すだけ</b> で済みます。
@@ -490,7 +580,7 @@
 
 <!-- ===== INSTANT ===== -->
 <section id="mode-instant">
-  <h1 class="section-title">8. INSTANT モード</h1>
+  <h1 class="section-title">9. INSTANT モード</h1>
   <p>
     よく使う転調値を <b>巨大なボタンでワンタップ呼び出し</b> するモードです。
     ライブ中で素早く 1 度や半音だけ動かしたいときに最適です。
@@ -518,7 +608,7 @@
 
 <!-- ===== SEQUENCE ===== -->
 <section id="mode-sequence">
-  <h1 class="section-title">9. SEQUENCE モード</h1>
+  <h1 class="section-title">10. SEQUENCE モード</h1>
   <p>
     <b>転調値の並び (パターン)</b> を作っておき、ステップごとに切り替えていけるモードです。
     曲の進行 (例: A メロ → サビ → 転調サビ) をあらかじめ仕込んでおけます。
@@ -558,7 +648,7 @@
 
 <!-- ===== MIDI Manager ===== -->
 <section id="midi-manager">
-  <h1 class="section-title">10. MIDI Manager とは</h1>
+  <h1 class="section-title">11. MIDI Manager とは</h1>
   <p>
     転調以外の <b>「不要メッセージのカット」「メッセージ書き換え」</b> を担当する、もう一つのグループです。
     <span class="tag long">C 長押し</span> で転調グループから移動できます。
@@ -586,7 +676,7 @@
 
 <!-- ===== FILTER ===== -->
 <section id="mode-filter">
-  <h1 class="section-title">11. FILTER モード</h1>
+  <h1 class="section-title">12. FILTER モード</h1>
   <p>
     特定の MIDI メッセージを <b>遮断</b> するためのモードです。
     例えば「ジョイスティックの Pitch Bend が暴れるのでカットしたい」「Ch10 のドラムは流したくない」というケースで使います。
@@ -648,7 +738,7 @@
 
 <!-- ===== MAPPER ===== -->
 <section id="mode-mapper">
-  <h1 class="section-title">12. MAPPER モード</h1>
+  <h1 class="section-title">13. MAPPER モード</h1>
   <p>
     入力メッセージを <b>別の MIDI メッセージへ書き換える</b> モードです。
     1 つのルールは <b>PG1 (変換元条件)</b> と <b>PG2 (変換先設定)</b> の 2 ページから構成されます。
@@ -717,7 +807,7 @@
 
 <!-- ===== Bypass ===== -->
 <section id="bypass">
-  <h1 class="section-title">13. BYPASS と ACTIVE</h1>
+  <h1 class="section-title">14. BYPASS と ACTIVE</h1>
   <p>
     FILTER と MAPPER は <b>独立して</b> ON / OFF できます。
     上段右の大ボタンが <span class="tag bypass">BYPASS</span> のときは <b>素通し</b>、
@@ -751,7 +841,7 @@
 
 <!-- ===== Flow ===== -->
 <section id="flow">
-  <h1 class="section-title">14. MIDI 処理の流れ</h1>
+  <h1 class="section-title">15. MIDI 処理の流れ</h1>
   <p>受信から送信までの順序は固定です。途中で BYPASS された段はそのままスルーされます。</p>
 
   <div class="flow">
@@ -778,7 +868,7 @@
 
 <!-- ===== Serial ===== -->
 <section id="serial">
-  <h1 class="section-title">15. PC 連携 (USB シリアル)</h1>
+  <h1 class="section-title">16. PC 連携 (USB シリアル)</h1>
   <p>
     本機は USB シリアルから操作できます。
     将来、PC 側で大画面 GUI を作る際に、本体の UI をそのまま遠隔操作できるよう設計されています。
@@ -801,9 +891,10 @@
     <tr><td><code>BUTTON A</code> / <code>B</code> / <code>C</code></td><td>物理ボタン押下を再現</td></tr>
     <tr><td><code>BUTTON C LONG</code></td><td>C 長押しを再現 (グループ切替)</td></tr>
     <tr><td><code>TOUCH x y</code></td><td>画面の (x, y) をタップ</td></tr>
+    <tr><td><code>MODE PLAY</code></td><td>演奏 (PLAY) モードへ直接ジャンプ</td></tr>
     <tr><td><code>MODE DIRECT / KEY / INSTANT / SEQUENCE</code></td><td>転調モードへ直接ジャンプ</td></tr>
     <tr><td><code>MODE FILTER / MAPPER</code></td><td>MIDI Manager 内のページへ直接ジャンプ</td></tr>
-    <tr><td><code>GROUP TRANSPOSE / MIDI</code></td><td>グループを直接指定</td></tr>
+    <tr><td><code>GROUP PLAY / TRANSPOSE / MIDI</code></td><td>グループを直接指定</td></tr>
     <tr><td><code>SET TRANSPOSE n</code></td><td>転調値を直接設定</td></tr>
     <tr><td><code>INFO SCREEN</code></td><td>画面サイズ情報を取得</td></tr>
     <tr><td><code>SCREENSHOT PPM</code></td><td>現在画面を PPM 形式で取得</td></tr>
@@ -830,10 +921,19 @@ OK SCREENSHOT_DONE
 
 <!-- ===== Tips ===== -->
 <section id="tips">
-  <h1 class="section-title">16. 困ったときに</h1>
+  <h1 class="section-title">17. 困ったときに</h1>
 
   <table>
     <tr><th>症状</th><th>確認ポイント</th></tr>
+    <tr>
+      <td>PLAY モードで音が出ない</td>
+      <td>
+        Unit MIDI が <b>Port A (Grove)</b> に接続されているか確認。<br>
+        画面下の <code>INIT</code> または <span class="btn-icon B">B</span> を押して再初期化。<br>
+        <code>TEST PHRASE</code> でアラベスク冒頭が鳴るかを切り分け。<br>
+        Port A に他の I2C デバイスを併用していないかも要確認 (UART と排他)。
+      </td>
+    </tr>
     <tr>
       <td>転調が効かない</td>
       <td>
@@ -851,7 +951,7 @@ OK SCREENSHOT_DONE
     <tr>
       <td>B ボタンの動きが画面ごとに違う</td>
       <td>
-        画面共通ヘッダの <code>B:○○</code> 表示で現在の役割が確認できます (3 章参照)。
+        画面共通ヘッダの <code>B:○○</code> 表示で現在の役割が確認できます (4 章参照)。
       </td>
     </tr>
     <tr>

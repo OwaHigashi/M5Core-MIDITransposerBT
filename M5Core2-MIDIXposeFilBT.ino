@@ -30,9 +30,14 @@ static inline void uiDrawC(const char* t, int rx, int ry, int rw, int rh) {
   M5.Lcd.drawString(t, rx + rw / 2, ry + rh / 2);
 }
 
-// CORE2でのピンアサイン（M5 MIDI Module2）
-#define RXD2 13
-#define TXD2 14
+// M5 Unit MIDI (SAM2695) is connected to M5Core2 Port A (Grove).
+// Port A pins: G32 (SDA) / G33 (SCL). They are repurposed here as UART2.
+// Per M5Unit-Synth example for Core2: synth.begin(&Serial2, 31250, 33, 32);
+//   -> Serial2 RX = G33 (host receives from Unit MIDI's TX)
+//   -> Serial2 TX = G32 (host transmits to Unit MIDI's RX)
+static constexpr uint32_t MIDI_UART_BAUD = 31250;
+static constexpr int MIDI_UART_RX_PIN = 33;
+static constexpr int MIDI_UART_TX_PIN = 32;
 
 // Bluetooth HID settings for SPT-10 foot pedal
 #define TARGET_BT_ADDR  { 0xA1, 0x12, 0x12, 0x92, 0x0E, 0x23 } // SPT-10 (Bluetooth Music Pedal) MAC address
@@ -55,6 +60,7 @@ static const uint8_t PEDAL_RIGHT_KEY = 0x51; // HID keyboard Down Arrow
 
 // モード定義
 enum DisplayMode {
+  PLAY_MODE,
   DIRECT_MODE,
   KEY_MODE,
   INSTANT_MODE,
@@ -94,6 +100,137 @@ enum MidiMessageKind {
   MIDI_KIND_COUNT
 };
 
+typedef enum {
+    GrandPiano_1 = 0,
+    BrightPiano_2,
+    ElGrdPiano_3,
+    HonkyTonkPiano,
+    ElPiano1,
+    ElPiano2,
+    Harpsichord,
+    Clavi,
+    Celesta,
+    Glockenspiel,
+    MusicBox,
+    Vibraphone,
+    Marimba,
+    Xylophone,
+    TubularBells,
+    Santur,
+    DrawbarOrgan,
+    PercussiveOrgan,
+    RockOrgan,
+    ChurchOrgan,
+    ReedOrgan,
+    AccordionFrench,
+    Harmonica,
+    TangoAccordion,
+    AcGuitarNylon,
+    AcGuitarSteel,
+    AcGuitarJazz,
+    AcGuitarClean,
+    AcGuitarMuted,
+    OverdrivenGuitar,
+    DistortionGuitar,
+    GuitarHarmonics,
+    AcousticBass,
+    FingerBass,
+    PickedBass,
+    FretlessBass,
+    SlapBass1,
+    SlapBass2,
+    SynthBass1,
+    SynthBass2,
+    Violin,
+    Viola,
+    Cello,
+    Contrabass,
+    TremoloStrings,
+    PizzicatoStrings,
+    OrchestralHarp,
+    Timpani,
+    StringEnsemble1,
+    StringEnsemble2,
+    SynthStrings1,
+    SynthStrings2,
+    ChoirAahs,
+    VoiceOohs,
+    SynthVoice,
+    OrchestraHit,
+    Trumpet,
+    Trombone,
+    Tuba,
+    MutedTrumpet,
+    FrenchHorn,
+    BrassSection,
+    SynthBrass1,
+    SynthBrass2,
+    SopranoSax,
+    AltoSax,
+    TenorSax,
+    BaritoneSax,
+    Oboe,
+    EnglishHorn,
+    Bassoon,
+    Clarinet,
+    Piccolo,
+    Flute,
+    Recorder,
+    PanFlute,
+    BlownBottle,
+    Shakuhachi,
+    Whistle,
+    Ocarina,
+    Lead1Square,
+    Lead2Sawtooth,
+    Lead3Calliope,
+    Lead4Chiff,
+    Lead5Charang,
+    Lead6Voice,
+    Lead7Fifths,
+    Lead8BassLead,
+    Pad1Fantasia,
+    Pad2Warm,
+    Pad3PolySynth,
+    Pad4Choir,
+    Pad5Bowed,
+    Pad6Metallic,
+    Pad7Halo,
+    Pad8Sweep,
+    FX1Rain,
+    FX2Soundtrack,
+    FX3Crystal,
+    FX4Atmosphere,
+    FX5Brightness,
+    FX6Goblins,
+    FX7Echoes,
+    FX8SciFi,
+    Sitar,
+    Banjo,
+    Shamisen,
+    Koto,
+    Kalimba,
+    BagPipe,
+    Fiddle,
+    Shanai,
+    TinkleBell,
+    Agogo,
+    SteelDrums,
+    Woodblock,
+    TaikoDrum,
+    MelodicTom,
+    SynthDrum,
+    ReverseCymbal,
+    GtFretNoise,
+    BreathNoise,
+    Seashore,
+    BirdTweet,
+    TelephRing,
+    Helicopter,
+    Applause,
+    Gunshot,
+} unit_synth_instrument_t;
+
 // 転調範囲モード（3種類に拡張）
 enum TransposeRange {
   RANGE_0_TO_12,        // 0から+11
@@ -132,7 +269,7 @@ bool majorUpperTranspose = false; // false=通常転調, true=上位転調
 bool minorUpperTranspose = false; // false=通常転調, true=下位転調
 
 // UI状態管理
-DisplayMode currentMode = DIRECT_MODE;
+DisplayMode currentMode = PLAY_MODE;
 TransposeRange transposeRange = RANGE_MINUS5_TO_6;  // 初期レンジを-5から+6に変更
 bool needFullRedraw = true;
 bool needPartialUpdate = false;
@@ -148,6 +285,25 @@ volatile bool g_usbBinaryTransferActive = false;
 // 汎用ナビゲーションボタン構造体
 struct NavButton {
   int x, y, w, h;
+};
+
+enum PlayControlButtonIndex {
+  PLAY_BTN_VOL_DOWN,
+  PLAY_BTN_VOL_UP,
+  PLAY_BTN_PROG_DOWN,
+  PLAY_BTN_PROG_UP,
+  PLAY_BTN_BEND_DOWN,
+  PLAY_BTN_BEND_UP,
+  PLAY_BTN_SUSTAIN,
+  PLAY_BTN_INIT,
+  PLAY_BTN_COUNT
+};
+
+enum PlayProgramPickerButtonIndex {
+  PLAY_PICKER_PREV,
+  PLAY_PICKER_NEXT,
+  PLAY_PICKER_CLOSE,
+  PLAY_PICKER_COUNT
 };
 
 struct MidiFilterRule {
@@ -222,6 +378,16 @@ bool isMidiInputIdle(unsigned long now);
 void processDeferredStorageTasks(unsigned long now);
 void handleTransposeChange(int8_t newTransposeValue);
 void processTouch(void);
+void drawPlayMode(void);
+void drawPlayProgramPicker(void);
+void processPlayModeTouch(TouchPoint_t pos);
+void processPlayProgramPickerTouch(TouchPoint_t pos);
+void drawMidiActionButton(int x, int y, int w, int h, const char* label, uint16_t fillColor);
+void sendPlayTestPhrase(void);
+void sendMidiControlChange(uint8_t channel, uint8_t controller, uint8_t value);
+void sendMidiProgramChange(uint8_t channel, uint8_t program);
+void sendMidiPitchBend(uint8_t channel, uint16_t bendValue);
+void sendPlayModeInit(bool resetProgramAndVolume);
 void sendAllNotesOff(void);
 void processMIDI(void);
 
@@ -244,6 +410,21 @@ SeqStepSlot seqSteps[SEQ_STEP_COUNT];
 NavButton seqPatLeftBtn, seqPatRightBtn;
 NavButton seqStepLeftBtn, seqStepRightBtn;
 NavButton seqSaveBtn;
+
+NavButton playButtons[PLAY_BTN_COUNT];
+NavButton playProgramPickerButtons[PLAY_PICKER_COUNT];
+NavButton playProgramNameBar;
+NavButton playTestBtn;
+uint8_t playVolume = 100;
+uint8_t playProgram = 0;
+uint16_t playPitchBend = 8192;
+bool playSustain = false;
+uint8_t playActiveChannel = 0;
+bool playProgramPickerOpen = false;
+uint8_t playProgramPickerPage = 0;
+const uint8_t PLAY_VOLUME_STEP = 8;
+const uint16_t PLAY_PITCH_BEND_STEP = 256;
+static constexpr uint8_t PLAY_PROGRAMS_PER_PAGE = 6;
 
 // Instant Mode の 0 ボタン（上段の上、ボタン2個分の幅）
 NavButton instantZeroBtn;
@@ -281,6 +462,7 @@ bool allNotesOffEnabled = false;
 unsigned long midiInCount = 0;
 unsigned long midiOutCount = 0;
 unsigned long g_lastMidiInputAt = 0;
+char g_lastMidiRxLabel[32] = "RX:--";
 bool g_btBondSavePending = false;
 bool g_seqSavePending = false;
 
@@ -315,6 +497,48 @@ int8_t clampTranspose(int8_t v) {
 
 bool touchInRect(TouchPoint_t pos, int x, int y, int w, int h) {
   return pos.x >= x && pos.x <= x + w && pos.y >= y && pos.y <= y + h;
+}
+
+static const char* const gUnitSynthInstrumentNames[] = {
+  "Grand Piano 1", "Bright Piano 2", "El Grd Piano 3", "Honky-Tonk Piano",
+  "Electric Piano 1", "Electric Piano 2", "Harpsichord", "Clavi",
+  "Celesta", "Glockenspiel", "Music Box", "Vibraphone",
+  "Marimba", "Xylophone", "Tubular Bells", "Santur",
+  "Drawbar Organ", "Percussive Organ", "Rock Organ", "Church Organ",
+  "Reed Organ", "Accordion French", "Harmonica", "Tango Accordion",
+  "Acoustic Guitar Nylon", "Acoustic Guitar Steel", "Acoustic Guitar Jazz", "Acoustic Guitar Clean",
+  "Acoustic Guitar Muted", "Overdriven Guitar", "Distortion Guitar", "Guitar Harmonics",
+  "Acoustic Bass", "Finger Bass", "Picked Bass", "Fretless Bass",
+  "Slap Bass 1", "Slap Bass 2", "Synth Bass 1", "Synth Bass 2",
+  "Violin", "Viola", "Cello", "Contrabass",
+  "Tremolo Strings", "Pizzicato Strings", "Orchestral Harp", "Timpani",
+  "String Ensemble 1", "String Ensemble 2", "Synth Strings 1", "Synth Strings 2",
+  "Choir Aahs", "Voice Oohs", "Synth Voice", "Orchestra Hit",
+  "Trumpet", "Trombone", "Tuba", "Muted Trumpet",
+  "French Horn", "Brass Section", "Synth Brass 1", "Synth Brass 2",
+  "Soprano Sax", "Alto Sax", "Tenor Sax", "Baritone Sax",
+  "Oboe", "English Horn", "Bassoon", "Clarinet",
+  "Piccolo", "Flute", "Recorder", "Pan Flute",
+  "Blown Bottle", "Shakuhachi", "Whistle", "Ocarina",
+  "Lead 1 Square", "Lead 2 Sawtooth", "Lead 3 Calliope", "Lead 4 Chiff",
+  "Lead 5 Charang", "Lead 6 Voice", "Lead 7 Fifths", "Lead 8 Bass + Lead",
+  "Pad 1 Fantasia", "Pad 2 Warm", "Pad 3 PolySynth", "Pad 4 Choir",
+  "Pad 5 Bowed", "Pad 6 Metallic", "Pad 7 Halo", "Pad 8 Sweep",
+  "FX 1 Rain", "FX 2 Soundtrack", "FX 3 Crystal", "FX 4 Atmosphere",
+  "FX 5 Brightness", "FX 6 Goblins", "FX 7 Echoes", "FX 8 Sci-Fi",
+  "Sitar", "Banjo", "Shamisen", "Koto",
+  "Kalimba", "Bag Pipe", "Fiddle", "Shanai",
+  "Tinkle Bell", "Agogo", "Steel Drums", "Woodblock",
+  "Taiko Drum", "Melodic Tom", "Synth Drum", "Reverse Cymbal",
+  "Guitar Fret Noise", "Breath Noise", "Seashore", "Bird Tweet",
+  "Telephone Ring", "Helicopter", "Applause", "Gunshot"
+};
+
+const char* getUnitSynthInstrumentName(uint8_t program) {
+  if (program >= (sizeof(gUnitSynthInstrumentNames) / sizeof(gUnitSynthInstrumentNames[0]))) {
+    return "Unknown";
+  }
+  return gUnitSynthInstrumentNames[program];
 }
 
 const char* getMidiKindLabel(MidiMessageKind kind) {
@@ -991,9 +1215,18 @@ void setup() {
   checkSDUpdater( SD, MENU_BIN, 2000, TFCARD_CS_PIN );
 
   Serial.begin(115200);
-  Serial2.begin(31250, SERIAL_8N1, RXD2, TXD2);
+
+  // M5.begin(..., true) initializes Wire on Port A (G32/G33) for I2C.
+  // We need those pins for UART instead, so release the I2C bus first.
+  // (Touch / AXP / IMU live on the internal Wire1 bus on G21/G22 and are unaffected.)
+  Wire.end();
+
+  Serial2.begin(MIDI_UART_BAUD, SERIAL_8N1, MIDI_UART_RX_PIN, MIDI_UART_TX_PIN);
   Serial2.setRxBufferSize(1024);
   Serial2.setTxBufferSize(512);
+  Serial2.setTimeout(10);
+  // Per M5Unit-Synth: pull-up RX so the line does not float when Unit MIDI is idle.
+  pinMode(MIDI_UART_RX_PIN, INPUT_PULLUP);
   
   // ノート状態の初期化
   for (int i = 0; i < TRACKED_NOTE_STATE_COUNT; i++) {
@@ -1014,6 +1247,7 @@ void setup() {
   initInstantModeButtons();
   initSequenceModeButtons();
   initMidiManagementDefaults();
+  enterDisplayMode(PLAY_MODE);
 
   // SDカード状態確認
   if (SD.cardType() == CARD_NONE) {
@@ -1366,7 +1600,13 @@ void drawInterface() {
 
   // ── Row 1 (y=2) : タイトル + 転調値 ──
   M5.Lcd.setTextColor(WHITE);
-  uiDrawL(currentMode == MIDI_MANAGE_MODE ? "MIDI Manager" : "MIDI Transposer", 10, 2);
+  if (currentMode == PLAY_MODE) {
+    uiDrawL("MIDI Player", 10, 2);
+  } else if (currentMode == MIDI_MANAGE_MODE) {
+    uiDrawL(midiManagePage == MIDI_PAGE_FILTER ? "MIDI Filter" : "MIDI Mapper", 10, 2);
+  } else {
+    uiDrawL("MIDI Transposer", 10, 2);
+  }
 
   // ── Row 2 (y=22) : AllOff | BT | I/O | ボタン補助 ──
   M5.Lcd.setTextColor(allNotesOffEnabled ? GREEN : RED);
@@ -1388,7 +1628,9 @@ void drawInterface() {
   M5.Lcd.setTextColor(DARKGREY);
   {
     const char* hint;
-    if (currentMode == MIDI_MANAGE_MODE) {
+    if (currentMode == PLAY_MODE) {
+      hint = "Tap PRG name  B:Init  C:Panic";
+    } else if (currentMode == MIDI_MANAGE_MODE) {
       hint = (midiManagePage == MIDI_PAGE_FILTER) ? "B:Type  Hold:Grp" : "B:PG1/2  Hold:Grp";
     } else {
       hint = "B:Action  Hold:Grp";
@@ -1407,6 +1649,8 @@ void drawInterface() {
     drawInstantMode();
   } else if (currentMode == SEQUENCE_MODE) {
     drawSequenceMode();
+  } else if (currentMode == PLAY_MODE) {
+    drawPlayMode();
   } else {
     drawMidiManageMode();
   }
@@ -1664,6 +1908,347 @@ void drawSequenceMode() {
   uiDrawC(">", seqStepRightBtn.x, seqStepRightBtn.y, seqStepRightBtn.w, seqStepRightBtn.h);
 }
 
+void layoutPlayModeButtons() {
+  const int marginX = 10;
+  const int gap = 6;
+  const int btnW = (SCREEN_WIDTH - marginX * 2 - gap * 3) / 4;
+  const int btnH = 28;
+  const int row1Y = 126;
+  const int row2Y = 158;
+
+  playButtons[PLAY_BTN_VOL_DOWN]   = { marginX + 0 * (btnW + gap), row1Y, btnW, btnH };
+  playButtons[PLAY_BTN_VOL_UP]     = { marginX + 1 * (btnW + gap), row1Y, btnW, btnH };
+  playButtons[PLAY_BTN_PROG_DOWN]  = { marginX + 2 * (btnW + gap), row1Y, btnW, btnH };
+  playButtons[PLAY_BTN_PROG_UP]    = { marginX + 3 * (btnW + gap), row1Y, btnW, btnH };
+
+  playButtons[PLAY_BTN_BEND_DOWN]  = { marginX + 0 * (btnW + gap), row2Y, btnW, btnH };
+  playButtons[PLAY_BTN_BEND_UP]    = { marginX + 1 * (btnW + gap), row2Y, btnW, btnH };
+  playButtons[PLAY_BTN_SUSTAIN]    = { marginX + 2 * (btnW + gap), row2Y, btnW, btnH };
+  playButtons[PLAY_BTN_INIT]       = { marginX + 3 * (btnW + gap), row2Y, btnW, btnH };
+
+  // 3 行ステータス (y=44/60/76, 各 16px 間隔) の下に PRG 名バー (h=28)
+  playProgramNameBar = { 10, 94, SCREEN_WIDTH - 20, 28 };
+  // TEST PHRASE は薄め (34 → 28)
+  playTestBtn = { 10, 192, SCREEN_WIDTH - 20, 28 };
+}
+
+void layoutPlayProgramPicker() {
+  const int x = 10;
+  const int y = 44;
+  const int w = SCREEN_WIDTH - 20;
+  const int h = SCREEN_HEIGHT - y - 10;
+  const int headerH = 20;
+  const int footerH = 28;
+
+  playProgramPickerButtons[PLAY_PICKER_PREV]  = { x, y + h - footerH, 74, footerH - 2 };
+  playProgramPickerButtons[PLAY_PICKER_NEXT]  = { x + w - 74, y + h - footerH, 74, footerH - 2 };
+  playProgramPickerButtons[PLAY_PICKER_CLOSE] = { x + 76, y + h - footerH, w - 152, footerH - 2 };
+}
+
+void drawPlayProgramPicker() {
+  layoutPlayProgramPicker();
+
+  const int x = 10;
+  const int y = 44;
+  const int w = SCREEN_WIDTH - 20;
+  const int h = SCREEN_HEIGHT - y - 10;
+  const int headerH = 20;
+  const int itemH = 18;
+  const int itemGap = 2;
+  const int startProgram = playProgramPickerPage * PLAY_PROGRAMS_PER_PAGE;
+  const int endProgram = min(128, startProgram + PLAY_PROGRAMS_PER_PAGE);
+
+  // 下のレイヤ (PLAY 本体) の文字が右端に残らないよう、ピッカー領域より少し広く塗り潰す
+  M5.Lcd.fillRect(0, 42, SCREEN_WIDTH, SCREEN_HEIGHT - 42, BLACK);
+
+  M5.Lcd.fillRoundRect(x, y, w, h, 6, BLACK);
+  M5.Lcd.drawRoundRect(x, y, w, h, 6, GREEN);
+
+  uiFontSmall();
+  M5.Lcd.setTextColor(CYAN);
+  uiDrawL("Select Program", x + 8, y + 4);
+
+  char pageLine[32];
+  M5.Lcd.setTextColor(YELLOW);
+  snprintf(pageLine, sizeof(pageLine), "%03d-%03d / 128",
+           startProgram + 1, endProgram);
+  uiDrawL(pageLine, x + w - 110, y + 4);
+
+  for (int i = 0; i < PLAY_PROGRAMS_PER_PAGE; i++) {
+    int program = startProgram + i;
+    int itemY = y + headerH + 4 + i * (itemH + itemGap);
+    if (program >= 128) {
+      M5.Lcd.fillRect(x + 4, itemY, w - 8, itemH, BLACK);
+      continue;
+    }
+
+    bool selected = (program == playProgram);
+    uint16_t fillColor = selected ? GREEN : DARKGREY;
+    uint16_t textColor = selected ? BLACK : WHITE;
+    M5.Lcd.fillRoundRect(x + 4, itemY, w - 8, itemH, 4, fillColor);
+    M5.Lcd.drawRoundRect(x + 4, itemY, w - 8, itemH, 4, WHITE);
+
+    char itemLine[64];
+    snprintf(itemLine, sizeof(itemLine), "%03d  %s", program + 1, getUnitSynthInstrumentName((uint8_t)program));
+    M5.Lcd.setTextColor(textColor);
+    uiDrawL(itemLine, x + 10, itemY + 1);
+  }
+
+  drawMidiActionButton(playProgramPickerButtons[PLAY_PICKER_PREV].x, playProgramPickerButtons[PLAY_PICKER_PREV].y,
+                       playProgramPickerButtons[PLAY_PICKER_PREV].w, playProgramPickerButtons[PLAY_PICKER_PREV].h,
+                       "< PREV", NAVY);
+  drawMidiActionButton(playProgramPickerButtons[PLAY_PICKER_NEXT].x, playProgramPickerButtons[PLAY_PICKER_NEXT].y,
+                       playProgramPickerButtons[PLAY_PICKER_NEXT].w, playProgramPickerButtons[PLAY_PICKER_NEXT].h,
+                       "NEXT >", NAVY);
+  drawMidiActionButton(playProgramPickerButtons[PLAY_PICKER_CLOSE].x, playProgramPickerButtons[PLAY_PICKER_CLOSE].y,
+                       playProgramPickerButtons[PLAY_PICKER_CLOSE].w, playProgramPickerButtons[PLAY_PICKER_CLOSE].h,
+                       "CLOSE", RED);
+}
+
+void drawPlayMode() {
+  layoutPlayModeButtons();
+
+  // 3 行のステータス。FSS9 の実フォント高は約 14px なので 16px 間隔で配置する
+  uiFontSmall();
+  char line[64];
+
+  // 1段目 (y=44): タイトル
+  M5.Lcd.setTextColor(CYAN);
+  uiDrawL("SAM2695 Live", 10, 44);
+
+  // 2段目 (y=60): VOL / PRG / PB
+  M5.Lcd.setTextColor(YELLOW);
+  snprintf(line, sizeof(line), "VOL:%03u  PRG:%03u  PB:%5u",
+           playVolume, (unsigned)(playProgram + 1), (unsigned)playPitchBend);
+  uiDrawL(line, 10, 60);
+
+  // 3段目 (y=76): CH / SUS / OUT
+  M5.Lcd.setTextColor(DARKGREY);
+  snprintf(line, sizeof(line), "CH:%02u  SUS:%s  OUT:%lu",
+           (unsigned)(playActiveChannel + 1), playSustain ? "ON " : "OFF", midiOutCount);
+  uiDrawL(line, 10, 76);
+
+  // PRG 名バー (h=30 に拡張)
+  M5.Lcd.fillRoundRect(playProgramNameBar.x, playProgramNameBar.y,
+                       playProgramNameBar.w, playProgramNameBar.h, 6,
+                       playProgramPickerOpen ? DARKGREY : NAVY);
+  M5.Lcd.drawRoundRect(playProgramNameBar.x, playProgramNameBar.y,
+                       playProgramNameBar.w, playProgramNameBar.h, 6, WHITE);
+
+  // バー内テキストは縦中央寄せ
+  uiFontSmall();
+  const int barTextY = playProgramNameBar.y + (playProgramNameBar.h - M5.Lcd.fontHeight()) / 2;
+
+  // 右側の "TAP" ヒントを先に右寄せで配置し、その左に PRG 名を入れる
+  M5.Lcd.setTextColor(LIGHTGREY);
+  const char* hint = "TAP";
+  const int hintW = M5.Lcd.textWidth(hint);
+  const int hintX = playProgramNameBar.x + playProgramNameBar.w - hintW - 10;
+  uiDrawL(hint, hintX, barTextY);
+
+  M5.Lcd.setTextColor(WHITE);
+  snprintf(line, sizeof(line), "PRG:%03u  %s",
+           (unsigned)(playProgram + 1), getUnitSynthInstrumentName(playProgram));
+  uiDrawL(line, playProgramNameBar.x + 8, barTextY);
+
+  const uint16_t buttonColors[PLAY_BTN_COUNT] = {
+    NAVY, NAVY, GREEN, GREEN, DARKGREY, DARKGREY, (playSustain ? GREEN : RED), RED
+  };
+  const char* labels[PLAY_BTN_COUNT] = {
+    "VOL-", "VOL+", "PRG-", "PRG+", "PB-", "PB+", "SUS", "INIT"
+  };
+
+  for (int i = 0; i < PLAY_BTN_COUNT; i++) {
+    drawMidiActionButton(playButtons[i].x, playButtons[i].y, playButtons[i].w, playButtons[i].h,
+                         labels[i], buttonColors[i]);
+  }
+
+  drawMidiActionButton(playTestBtn.x, playTestBtn.y, playTestBtn.w, playTestBtn.h, "TEST PHRASE", ORANGE);
+
+  if (playProgramPickerOpen) {
+    drawPlayProgramPicker();
+  }
+}
+
+void processPlayModeTouch(TouchPoint_t pos) {
+  layoutPlayModeButtons();
+
+  if (playProgramPickerOpen) {
+    processPlayProgramPickerTouch(pos);
+    return;
+  }
+
+  if (touchInRect(pos, playProgramNameBar.x, playProgramNameBar.y, playProgramNameBar.w, playProgramNameBar.h)) {
+    playProgramPickerOpen = true;
+    playProgramPickerPage = playProgram / PLAY_PROGRAMS_PER_PAGE;
+    needFullRedraw = true;
+    Serial.printf("Play program picker open: page=%u\n", playProgramPickerPage + 1);
+    return;
+  }
+
+  if (touchInRect(pos, playTestBtn.x, playTestBtn.y, playTestBtn.w, playTestBtn.h)) {
+    sendPlayTestPhrase();
+    needFullRedraw = true;
+    return;
+  }
+
+  for (int i = 0; i < PLAY_BTN_COUNT; i++) {
+    if (!touchInRect(pos, playButtons[i].x, playButtons[i].y, playButtons[i].w, playButtons[i].h)) {
+      continue;
+    }
+
+    switch (i) {
+      case PLAY_BTN_VOL_DOWN:
+        if (playVolume > PLAY_VOLUME_STEP) playVolume = (uint8_t)(playVolume - PLAY_VOLUME_STEP);
+        else playVolume = 0;
+        sendMidiControlChange(playActiveChannel, 7, playVolume);
+        Serial.printf("Play volume: %u\n", playVolume);
+        break;
+      case PLAY_BTN_VOL_UP:
+        if (playVolume >= 127 - PLAY_VOLUME_STEP) playVolume = 127;
+        else playVolume = (uint8_t)(playVolume + PLAY_VOLUME_STEP);
+        sendMidiControlChange(playActiveChannel, 7, playVolume);
+        Serial.printf("Play volume: %u\n", playVolume);
+        break;
+      case PLAY_BTN_PROG_DOWN:
+        if (playProgram > 0) playProgram--;
+        else playProgram = 127;
+        sendMidiProgramChange(playActiveChannel, playProgram);
+        Serial.printf("Play program: %u\n", (unsigned)(playProgram + 1));
+        break;
+      case PLAY_BTN_PROG_UP:
+        playProgram = (uint8_t)((playProgram + 1) & 0x7F);
+        sendMidiProgramChange(playActiveChannel, playProgram);
+        Serial.printf("Play program: %u\n", (unsigned)(playProgram + 1));
+        break;
+      case PLAY_BTN_BEND_DOWN:
+        if (playPitchBend <= PLAY_PITCH_BEND_STEP) playPitchBend = 0;
+        else playPitchBend = (uint16_t)(playPitchBend - PLAY_PITCH_BEND_STEP);
+        sendMidiPitchBend(playActiveChannel, playPitchBend);
+        Serial.printf("Play bend: %u\n", playPitchBend);
+        break;
+      case PLAY_BTN_BEND_UP:
+        if (playPitchBend >= 16383 - PLAY_PITCH_BEND_STEP) playPitchBend = 16383;
+        else playPitchBend = (uint16_t)(playPitchBend + PLAY_PITCH_BEND_STEP);
+        sendMidiPitchBend(playActiveChannel, playPitchBend);
+        Serial.printf("Play bend: %u\n", playPitchBend);
+        break;
+      case PLAY_BTN_SUSTAIN:
+        playSustain = !playSustain;
+        sendMidiControlChange(playActiveChannel, 64, playSustain ? 127 : 0);
+        Serial.printf("Play sustain: %s\n", playSustain ? "ON" : "OFF");
+        break;
+      case PLAY_BTN_INIT:
+        sendPlayModeInit(true);
+        Serial.println("Play mode init");
+        break;
+    }
+
+    needFullRedraw = true;
+    break;
+  }
+}
+
+void processPlayProgramPickerTouch(TouchPoint_t pos) {
+  layoutPlayProgramPicker();
+
+  if (touchInRect(pos, playProgramPickerButtons[PLAY_PICKER_CLOSE].x, playProgramPickerButtons[PLAY_PICKER_CLOSE].y,
+                  playProgramPickerButtons[PLAY_PICKER_CLOSE].w, playProgramPickerButtons[PLAY_PICKER_CLOSE].h)) {
+    playProgramPickerOpen = false;
+    needFullRedraw = true;
+    Serial.println("Play program picker close");
+    return;
+  }
+
+  if (touchInRect(pos, playProgramPickerButtons[PLAY_PICKER_PREV].x, playProgramPickerButtons[PLAY_PICKER_PREV].y,
+                  playProgramPickerButtons[PLAY_PICKER_PREV].w, playProgramPickerButtons[PLAY_PICKER_PREV].h)) {
+    if (playProgramPickerPage > 0) playProgramPickerPage--;
+    needFullRedraw = true;
+    Serial.printf("Play program picker page: %u\n", playProgramPickerPage + 1);
+    return;
+  }
+
+  if (touchInRect(pos, playProgramPickerButtons[PLAY_PICKER_NEXT].x, playProgramPickerButtons[PLAY_PICKER_NEXT].y,
+                  playProgramPickerButtons[PLAY_PICKER_NEXT].w, playProgramPickerButtons[PLAY_PICKER_NEXT].h)) {
+    uint8_t maxPage = 127 / PLAY_PROGRAMS_PER_PAGE;
+    if (playProgramPickerPage < maxPage) playProgramPickerPage++;
+    needFullRedraw = true;
+    Serial.printf("Play program picker page: %u\n", playProgramPickerPage + 1);
+    return;
+  }
+
+  const int x = 10;
+  const int y = 44;
+  const int headerH = 20;
+  const int itemH = 18;
+  const int itemGap = 2;
+  const int startProgram = playProgramPickerPage * PLAY_PROGRAMS_PER_PAGE;
+
+  for (int i = 0; i < PLAY_PROGRAMS_PER_PAGE; i++) {
+    int program = startProgram + i;
+    int itemY = y + headerH + 4 + i * (itemH + itemGap);
+    if (program >= 128) continue;
+    if (!touchInRect(pos, x + 4, itemY, SCREEN_WIDTH - 28, itemH)) continue;
+
+    playProgram = (uint8_t)program;
+    playProgramPickerOpen = false;
+    sendMidiProgramChange(playActiveChannel, playProgram);
+    needFullRedraw = true;
+    Serial.printf("Play program select: %03u %s\n", (unsigned)(playProgram + 1), getUnitSynthInstrumentName(playProgram));
+    return;
+  }
+}
+
+void sendPlayTestPhrase() {
+  const uint8_t channel = 0;
+
+  Serial.printf("Play test phrase start: tx=ch%u program=%u %s\n",
+                (unsigned)(channel + 1), (unsigned)(playProgram + 1), getUnitSynthInstrumentName(playProgram));
+
+  sendAllNotesOff();
+
+  // Make the test as loud and deterministic as possible.
+  sendMidiControlChange(channel, 7, 127);
+  sendMidiControlChange(channel, 11, 127);
+  sendMidiProgramChange(channel, playProgram);
+  sendMidiPitchBend(channel, 8192);
+
+  // Opening of Debussy "Deux Arabesques" No. 1 (E major).
+  // Right-hand triplet melody from m.6, then the famous descending arpeggio.
+  // Each entry: { MIDI note, hold ms, gap ms after release }.
+  struct PhraseNote { uint8_t note; uint16_t holdMs; uint16_t gapMs; };
+  static const PhraseNote phrase[] = {
+    // m.6: triplet figure rising and falling around E major
+    { 76, 170, 5 }, { 78, 170, 5 }, { 80, 170, 5 },   // E5  F#5 G#5
+    { 81, 170, 5 }, { 80, 170, 5 }, { 78, 170, 5 },   // A5  G#5 F#5
+    { 80, 170, 5 }, { 78, 170, 5 }, { 76, 170, 5 },   // G#5 F#5 E5
+    { 75, 170, 5 }, { 76, 340, 30 },                  // D#5 E5(longer)
+    // m.7: characteristic descending cascade
+    { 85, 130, 0 }, { 83, 130, 0 }, { 81, 130, 0 },   // C#6 B5  A5
+    { 80, 130, 0 }, { 78, 130, 0 }, { 76, 130, 0 },   // G#5 F#5 E5
+    { 75, 130, 0 }, { 73, 260, 20 },                  // D#5 C#5
+    // soft cadence to the tonic
+    { 71, 200, 0 }, { 73, 200, 0 }, { 76, 600, 0 },   // B4  C#5 E5
+  };
+  const size_t kPhraseLen = sizeof(phrase) / sizeof(phrase[0]);
+  const uint8_t velocity = 96;
+
+  for (size_t i = 0; i < kPhraseLen; i++) {
+    const PhraseNote& n = phrase[i];
+    Serial2.write(0x90 | channel);
+    Serial2.write(n.note);
+    Serial2.write(velocity);
+    midiOutCount += 3;
+    delay(n.holdMs);
+    Serial2.write(0x80 | channel);
+    Serial2.write(n.note);
+    Serial2.write((uint8_t)0);
+    midiOutCount += 3;
+    if (n.gapMs) delay(n.gapMs);
+  }
+  Serial.println("Play test phrase done");
+}
+
 void drawMidiRuleListBox(int x, int y, int w, int h, bool selected) {
   M5.Lcd.fillRect(x, y, w, h, selected ? DARKGREY : BLACK);
   M5.Lcd.drawRect(x, y, w, h, selected ? GREEN : DARKGREY);
@@ -1887,20 +2472,28 @@ void updateStatusArea() {
   uiFontSmall();
 
   char buf[32];
-  if (transposeValue > 0) {
-    snprintf(buf, sizeof(buf), "Trans:+%d", transposeValue);
-  } else if (transposeValue < 0) {
-    snprintf(buf, sizeof(buf), "Trans:%d", transposeValue);
-  } else {
-    snprintf(buf, sizeof(buf), "Trans: 0");
+  // PLAY モードでは RX 状態は本体内の表示と重なるため右上には出さない
+  if (currentMode != PLAY_MODE) {
+    if (transposeValue > 0) {
+      snprintf(buf, sizeof(buf), "Trans:+%d", transposeValue);
+    } else if (transposeValue < 0) {
+      snprintf(buf, sizeof(buf), "Trans:%d", transposeValue);
+    } else {
+      snprintf(buf, sizeof(buf), "Trans: 0");
+    }
+    M5.Lcd.setTextColor(YELLOW);
+    uiDrawL(buf, 240, 2);
   }
-  M5.Lcd.setTextColor(YELLOW);
-  uiDrawL(buf, 240, 2);
 
-  // I/O カウンタは Row1 中央寄り
+  // I/O カウンタ (PLAY モードでは右端まで使えるので右寄せにする)
   M5.Lcd.setTextColor(DARKGREY);
   snprintf(buf, sizeof(buf), "I:%lu O:%lu", midiInCount, midiOutCount);
-  uiDrawL(buf, 165, 2);
+  if (currentMode == PLAY_MODE) {
+    int w = M5.Lcd.textWidth(buf);
+    uiDrawL(buf, SCREEN_WIDTH - w - 6, 2);
+  } else {
+    uiDrawL(buf, 165, 2);
+  }
 }
 
 // フットスイッチによる転調値選択処理
@@ -1935,6 +2528,10 @@ void processFootPedal() {
     Serial.printf("Foot pedal: Left=%s Right=%s\n",
                   leftJustPressed ? "PRESSED" : "released",
                   rightJustPressed ? "PRESSED" : "released");
+
+    if (currentMode == PLAY_MODE) {
+      return;
+    }
 
     if (currentMode == SEQUENCE_MODE) {
       // SEQUENCE_MODE: ペダルでステップを移動
@@ -2041,7 +2638,10 @@ void processFootPedal() {
 void enterDisplayMode(int newMode) {
   currentMode = (DisplayMode)newMode;
 
-  if (currentMode == DIRECT_MODE) {
+  if (currentMode == PLAY_MODE) {
+    playPitchBend = clampInt(playPitchBend, 0, 16383);
+    sendPlayModeInit(false);
+  } else if (currentMode == DIRECT_MODE) {
     setCurrentTransposeButton();
   } else if (currentMode == KEY_MODE) {
     selectedMajorKey = -1;
@@ -2060,20 +2660,30 @@ void enterDisplayMode(int newMode) {
 void advanceDisplayMode() {
   sendAllNotesOff();
 
-  if (currentMode == MIDI_MANAGE_MODE) {
+  if (currentMode == PLAY_MODE) {
     DisplayMode restoreMode = isTransposeDisplayMode(lastTransposeMode) ? lastTransposeMode : DIRECT_MODE;
     enterDisplayMode(restoreMode);
     Serial.printf("Group: TRANSPOSE (%d)\n", restoreMode);
-  } else {
+  } else if (isTransposeDisplayMode(currentMode)) {
     if (isTransposeDisplayMode(currentMode)) {
       lastTransposeMode = currentMode;
     }
+    midiManagePage = MIDI_PAGE_FILTER;
     enterDisplayMode(MIDI_MANAGE_MODE);
     Serial.println("Group: MIDI_MANAGE");
+  } else {
+    enterDisplayMode(PLAY_MODE);
+    Serial.println("Group: PLAY");
   }
 }
 
 void advanceSubMode() {
+  if (currentMode == PLAY_MODE) {
+    sendAllNotesOff();
+    Serial.println("Play mode panic");
+    return;
+  }
+
   if (currentMode == MIDI_MANAGE_MODE) {
     midiManagePage = (midiManagePage == MIDI_PAGE_FILTER) ? MIDI_PAGE_MAPPER : MIDI_PAGE_FILTER;
     needFullRedraw = true;
@@ -2665,6 +3275,7 @@ void processMidiManageTouch(TouchPoint_t pos) {
 
 const char* getDisplayModeLabel(DisplayMode mode) {
   switch (mode) {
+    case PLAY_MODE: return "PLAY";
     case DIRECT_MODE: return "DIRECT";
     case KEY_MODE: return "KEY";
     case INSTANT_MODE: return "INSTANT";
@@ -2714,6 +3325,13 @@ void handleButtonAAction() {
 }
 
 void handleButtonBAction() {
+  if (currentMode == PLAY_MODE) {
+    sendPlayModeInit(true);
+    needFullRedraw = true;
+    Serial.println("Play mode init");
+    return;
+  }
+
   if (currentMode == DIRECT_MODE) {
     if (transposeRange == RANGE_0_TO_12) {
       transposeRange = RANGE_MINUS12_TO_0;
@@ -2749,6 +3367,12 @@ void handleButtonBAction() {
 }
 
 void handleButtonCShortAction() {
+  if (currentMode == PLAY_MODE) {
+    sendAllNotesOff();
+    needFullRedraw = true;
+    Serial.println("Play mode panic");
+    return;
+  }
   advanceSubMode();
 }
 
@@ -2757,6 +3381,9 @@ void handleButtonCLongAction() {
 }
 
 void dispatchTouchPoint(TouchPoint_t pos) {
+  if (currentMode == PLAY_MODE) {
+    processPlayModeTouch(pos);
+  } else
   if (currentMode == DIRECT_MODE) {
     processDirectModeTouch(pos);
   } else if (currentMode == KEY_MODE) {
@@ -2778,6 +3405,10 @@ void injectTouchPoint(int16_t x, int16_t y) {
 }
 
 bool setGroupFromCommand(const char* groupName) {
+  if (tokenEqualsIgnoreCase(groupName, "PLAY")) {
+    enterDisplayMode(PLAY_MODE);
+    return true;
+  }
   if (tokenEqualsIgnoreCase(groupName, "TRANSPOSE")) {
     DisplayMode restoreMode = isTransposeDisplayMode(lastTransposeMode) ? lastTransposeMode : DIRECT_MODE;
     enterDisplayMode(restoreMode);
@@ -2787,12 +3418,18 @@ bool setGroupFromCommand(const char* groupName) {
       tokenEqualsIgnoreCase(groupName, "MANAGER") ||
       tokenEqualsIgnoreCase(groupName, "MIDI_MANAGER")) {
     enterDisplayMode(MIDI_MANAGE_MODE);
+    midiManagePage = MIDI_PAGE_FILTER;
+    needFullRedraw = true;
     return true;
   }
   return false;
 }
 
 bool setModeFromCommand(const char* modeName) {
+  if (tokenEqualsIgnoreCase(modeName, "PLAY")) {
+    enterDisplayMode(PLAY_MODE);
+    return true;
+  }
   if (tokenEqualsIgnoreCase(modeName, "DIRECT")) {
     enterDisplayMode(DIRECT_MODE);
     return true;
@@ -2825,6 +3462,8 @@ bool setModeFromCommand(const char* modeName) {
       tokenEqualsIgnoreCase(modeName, "MANAGER") ||
       tokenEqualsIgnoreCase(modeName, "MIDI_MANAGER")) {
     enterDisplayMode(MIDI_MANAGE_MODE);
+    midiManagePage = MIDI_PAGE_FILTER;
+    needFullRedraw = true;
     return true;
   }
   return false;
@@ -2838,7 +3477,7 @@ void printUsbSerialStatus() {
     "OK STATUS mode=%s group=%s transpose=%d range=%d filter_bypass=%d mapper_bypass=%d "
     "filter_rule=%d/%d mapper_rule=%d/%d page=%s mapper_page=%s midi_in=%lu midi_out=%lu bt=%s\n",
     getDisplayModeLabel(currentMode),
-    (currentMode == MIDI_MANAGE_MODE) ? "MIDI" : "TRANSPOSE",
+    (currentMode == PLAY_MODE) ? "PLAY" : (currentMode == MIDI_MANAGE_MODE ? "MIDI" : "TRANSPOSE"),
     transposeValue,
     (int)transposeRange,
     midiFilterBypass ? 1 : 0,
@@ -2860,8 +3499,8 @@ void printUsbSerialHelp() {
   Serial.println("REDRAW");
   Serial.println("BUTTON A|B|C [LONG]");
   Serial.println("TOUCH <x> <y>");
-  Serial.println("MODE DIRECT|KEY|INSTANT|SEQUENCE|FILTER|MAPPER|MIDI");
-  Serial.println("GROUP TRANSPOSE|MIDI");
+  Serial.println("MODE PLAY|DIRECT|KEY|INSTANT|SEQUENCE|FILTER|MAPPER|MIDI");
+  Serial.println("GROUP PLAY|TRANSPOSE|MIDI");
   Serial.println("SET TRANSPOSE <-11..11>");
   Serial.println("SCREENSHOT [PPM|RGB888]");
   Serial.println("INFO SCREEN");
@@ -3105,8 +3744,60 @@ void sendAllNotesOff() {
   }
 
   clearTrackedNoteStates();
-  
+
   Serial.println("All Notes Off sent");
+}
+
+void sendMidiControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
+  Serial2.write(0xB0 | (channel & 0x0F));
+  Serial2.write(controller & 0x7F);
+  Serial2.write(value & 0x7F);
+  midiOutCount += 3;
+}
+
+void sendMidiProgramChange(uint8_t channel, uint8_t program) {
+  Serial2.write(0xC0 | (channel & 0x0F));
+  Serial2.write(program & 0x7F);
+  midiOutCount += 2;
+}
+
+void sendMidiPitchBend(uint8_t channel, uint16_t bendValue) {
+  if (bendValue > 16383) bendValue = 16383;
+  Serial2.write(0xE0 | (channel & 0x0F));
+  Serial2.write((uint8_t)(bendValue & 0x7F));
+  Serial2.write((uint8_t)((bendValue >> 7) & 0x7F));
+  midiOutCount += 3;
+}
+
+void sendPlayModeInit(bool resetProgramAndVolume) {
+  const uint8_t channel = playActiveChannel & 0x0F;
+
+  playProgramPickerOpen = false;
+
+  // GS Reset
+  const uint8_t gsReset[] = { 0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7 };
+  for (uint8_t b : gsReset) {
+    Serial2.write(b);
+    midiOutCount++;
+  }
+
+  // Reset controllers for a predictable performance state.
+  sendMidiControlChange(channel, 121, 0);
+  sendMidiControlChange(channel, 123, 0);
+  sendMidiControlChange(channel, 120, 0);
+
+  if (resetProgramAndVolume) {
+    playVolume = 100;
+    playProgram = 0;
+    playPitchBend = 8192;
+    playSustain = false;
+  }
+
+  sendMidiControlChange(channel, 7, playVolume);
+  sendMidiControlChange(channel, 11, 127);
+  sendMidiProgramChange(channel, playProgram);
+  sendMidiPitchBend(channel, playPitchBend);
+  sendMidiControlChange(channel, 64, playSustain ? 127 : 0);
 }
 
 void processMIDI() {
@@ -3122,9 +3813,57 @@ void processMIDI() {
   }
 }
 
+void recordMidiRxDebug(const uint8_t* bytes, uint8_t length, bool hasChannel, int8_t channel) {
+  const uint8_t status = (length > 0) ? bytes[0] : 0;
+  const char* kindLabel = "Msg";
+  switch (status) {
+    case 0x80: kindLabel = "NoteOff"; break;
+    case 0x90: kindLabel = "NoteOn"; break;
+    case 0xA0: kindLabel = "KeyPrs"; break;
+    case 0xB0: kindLabel = "CtrlChg"; break;
+    case 0xC0: kindLabel = "PrgChg"; break;
+    case 0xD0: kindLabel = "ChPrs"; break;
+    case 0xE0: kindLabel = "Bend"; break;
+    case 0xF0: kindLabel = "SysEx"; break;
+    case 0xF1: kindLabel = "MTC"; break;
+    case 0xF2: kindLabel = "SongPos"; break;
+    case 0xF3: kindLabel = "SongSel"; break;
+    case 0xF6: kindLabel = "TuneReq"; break;
+    case 0xF8: kindLabel = "Clock"; break;
+    case 0xFA: kindLabel = "Start"; break;
+    case 0xFB: kindLabel = "Cont"; break;
+    case 0xFC: kindLabel = "Stop"; break;
+    case 0xFE: kindLabel = "ActSn"; break;
+    case 0xFF: kindLabel = "Reset"; break;
+    default: break;
+  }
+  if (hasChannel && channel >= 0) {
+    snprintf(g_lastMidiRxLabel, sizeof(g_lastMidiRxLabel), "RX:%s C%02d", kindLabel, (int)channel + 1);
+  } else {
+    snprintf(g_lastMidiRxLabel, sizeof(g_lastMidiRxLabel), "RX:%s", kindLabel);
+  }
+  g_lastMidiInputAt = millis();
+}
+
 void handleParsedMidiMessage(const MidiMessage& inMsg) {
+  recordMidiRxDebug(inMsg.bytes, inMsg.length, inMsg.hasChannel, inMsg.channel);
+
+  if (currentMode == PLAY_MODE) {
+    if (inMsg.hasChannel && inMsg.channel >= 0) {
+      playActiveChannel = (uint8_t)inMsg.channel;
+    }
+    Serial.printf("[MIDI RX PLAY] %s\n", g_lastMidiRxLabel);
+    uint8_t raw[3] = { 0, 0, 0 };
+    for (int i = 0; i < inMsg.length; i++) raw[i] = inMsg.bytes[i];
+    sendMIDIMessage(raw, inMsg.length);
+    return;
+  }
+
   if (!shouldAllowMidiMessage(inMsg)) return;
   MidiMessage mappedMsg = applyMidiMapper(inMsg);
+  if (mappedMsg.hasChannel && mappedMsg.channel >= 0) {
+    playActiveChannel = (uint8_t)mappedMsg.channel;
+  }
   sendMIDIMessage(mappedMsg.bytes, mappedMsg.length);
 }
 
@@ -3243,6 +3982,14 @@ int getMIDIMessageLength(uint8_t status) {
 }
 
 void sendMIDIMessage(uint8_t* buffer, int length) {
+  if (currentMode == PLAY_MODE) {
+    for (int i = 0; i < length; i++) {
+      Serial2.write(buffer[i]);
+    }
+    midiOutCount += length;
+    return;
+  }
+
   uint8_t status = buffer[0];
   uint8_t messageType = status & 0xF0;
   uint8_t channel = status & 0x0F;
