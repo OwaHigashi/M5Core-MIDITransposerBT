@@ -1664,14 +1664,25 @@ void processMIDIByte(uint8_t midiData) {
   }
   
   if (inSysEx) {
-    Serial2.write(midiData);
-    midiOutCount++;
-    if (midiData == 0xF7) {
+    // Defensive: a non-realtime status byte during SysEx is illegal but
+    // some devices emit it. If we kept echoing into Serial2 here we would
+    // never escape SysEx mode and every subsequent message would be
+    // forwarded raw without transpose, manifesting as stuck notes / drift.
+    if (midiData >= 0x80 && midiData != 0xF7) {
+      Serial2.write((uint8_t)0xF7);  // close SysEx synthetically
+      midiOutCount++;
       inSysEx = false;
+      // fall through so the new status byte is parsed normally
+    } else {
+      Serial2.write(midiData);
+      midiOutCount++;
+      if (midiData == 0xF7) {
+        inSysEx = false;
+      }
+      return;
     }
-    return;
   }
-  
+
   if (midiData == 0xF0) {
     inSysEx = true;
     Serial2.write(midiData);
