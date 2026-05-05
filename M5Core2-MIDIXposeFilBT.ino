@@ -991,9 +991,18 @@ void setup() {
   checkSDUpdater( SD, MENU_BIN, 2000, TFCARD_CS_PIN );
 
   Serial.begin(115200);
+  // setRxBufferSize / setTxBufferSize must run BEFORE begin() — the
+  // arduino-esp32 implementation early-returns once the UART driver is
+  // installed (HardwareSerial.cpp::setTxBufferSize: `if (_uart) return 0;`).
+  // The previous order silently no-op'd both calls, so Serial2 ran with
+  // the default 256-byte RX ring and NO TX ring at all (just the ~128-byte
+  // hardware FIFO). At 31.25 kbaud that overflowed almost immediately when
+  // a keyboard player drove sustained MIDI input, making every Serial2.write()
+  // block waiting for the FIFO to drain — starving the loop and tripping the
+  // task watchdog.
+  Serial2.setRxBufferSize(2048);
+  Serial2.setTxBufferSize(4096);
   Serial2.begin(31250, SERIAL_8N1, RXD2, TXD2);
-  Serial2.setRxBufferSize(1024);
-  Serial2.setTxBufferSize(512);
   
   // ノート状態の初期化
   for (int i = 0; i < TRACKED_NOTE_STATE_COUNT; i++) {
@@ -3110,8 +3119,20 @@ void sendAllNotesOff() {
 }
 
 void processMIDI() {
+  // Cap the work done per loop iteration. A keyboard player driving heavy
+  // running-status + clock + chord traffic can sustain bursts that outpace
+  // the 31.25 kbaud MIDI OUT, and Serial2.write() blocks once the TX ring
+  // is full. Without a budget, draining-to-empty inside a single loop()
+  // iteration prevents M5.update() / LCD refresh / Bluetooth servicing /
+  // the IDLE task from running and the task watchdog resets the device.
+  // Unconsumed bytes stay in the Serial2 RX ring and are picked up on the
+  // next loop iteration. 3 ms keeps response latency below one MIDI clock
+  // tick at 240 BPM.
+  const uint32_t startUs = micros();
+  const uint32_t kBudgetUs = 3000UL;
   bool sawInput = false;
   while (Serial2.available()) {
+    if ((micros() - startUs) >= kBudgetUs) break;
     uint8_t incomingByte = Serial2.read();
     sawInput = true;
     midiInCount++;
