@@ -456,9 +456,15 @@ void setup() {
   checkSDUpdater( SD, MENU_BIN, 2000, TFCARD_CS_PIN );
 
   Serial.begin(115200);
+  // setRxBufferSize / setTxBufferSize must run BEFORE begin() — the
+  // arduino-esp32 implementation early-returns once the UART driver is
+  // installed (HardwareSerial.cpp::setTxBufferSize: `if (_uart) return 0;`).
+  // Calling them after begin() silently no-ops, leaving Serial2 with no TX
+  // ring (just the ~128-byte hardware FIFO). Sustained MIDI input then
+  // overflows the FIFO and Serial2.write() blocks, starving the loop.
+  Serial2.setRxBufferSize(2048);
+  Serial2.setTxBufferSize(4096);
   Serial2.begin(31250, SERIAL_8N1, RXD2, TXD2);
-  Serial2.setRxBufferSize(256);
-  Serial2.setTxBufferSize(256);
   
   // ノート状態の初期化
   for (int i = 0; i < PIANO_KEY_COUNT; i++) {
@@ -1644,7 +1650,15 @@ void sendAllNotesOff() {
 }
 
 void processMIDI() {
+  // Cap the work done per loop iteration. Sustained MIDI bursts can outpace
+  // the 31.25 kbaud TX, and Serial2.write() blocks once the TX ring is full.
+  // Without a budget the loop never returns to M5.update() / IDLE / WDT feed,
+  // and the device resets. Unconsumed bytes stay in the Serial2 RX ring and
+  // are picked up on the next loop iteration.
+  const uint32_t startUs = micros();
+  const uint32_t kBudgetUs = 3000UL;
   while (Serial2.available()) {
+    if ((micros() - startUs) >= kBudgetUs) break;
     uint8_t incomingByte = Serial2.read();
     midiInCount++;
     processMIDIByte(incomingByte);
