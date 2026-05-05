@@ -1221,9 +1221,18 @@ void setup() {
   // (Touch / AXP / IMU live on the internal Wire1 bus on G21/G22 and are unaffected.)
   Wire.end();
 
+  // setRxBufferSize / setTxBufferSize must run BEFORE begin() — the
+  // arduino-esp32 implementation early-returns once the UART driver is
+  // installed (HardwareSerial.cpp::setTxBufferSize: `if (_uart) return 0;`).
+  // The previous order silently no-op'd both calls, so Serial2 ran with
+  // the default 256-byte RX ring and NO TX ring at all (just the ~128-byte
+  // hardware FIFO). At 31.25 kbaud that overflowed almost immediately when
+  // a keyboard player drove sustained MIDI input, making every Serial2.write()
+  // block waiting for the FIFO to drain — starving the loop and tripping the
+  // task watchdog.
+  Serial2.setRxBufferSize(2048);
+  Serial2.setTxBufferSize(4096);
   Serial2.begin(MIDI_UART_BAUD, SERIAL_8N1, MIDI_UART_RX_PIN, MIDI_UART_TX_PIN);
-  Serial2.setRxBufferSize(1024);
-  Serial2.setTxBufferSize(512);
   Serial2.setTimeout(10);
   // Per M5Unit-Synth: pull-up RX so the line does not float when Unit MIDI is idle.
   pinMode(MIDI_UART_RX_PIN, INPUT_PULLUP);
@@ -3801,8 +3810,20 @@ void sendPlayModeInit(bool resetProgramAndVolume) {
 }
 
 void processMIDI() {
+  // Cap the work done per loop iteration. A keyboard player driving heavy
+  // running-status + clock + chord traffic can sustain bursts that outpace
+  // the 31.25 kbaud MIDI OUT, and Serial2.write() blocks once the TX ring
+  // is full. Without a budget, draining-to-empty inside a single loop()
+  // iteration prevents M5.update() / LCD refresh / Bluetooth servicing /
+  // the IDLE task from running and the task watchdog resets the device.
+  // Unconsumed bytes stay in the Serial2 RX ring and are picked up on the
+  // next loop iteration. 3 ms keeps response latency below one MIDI clock
+  // tick at 240 BPM.
+  const uint32_t startUs = micros();
+  const uint32_t kBudgetUs = 3000UL;
   bool sawInput = false;
   while (Serial2.available()) {
+    if ((micros() - startUs) >= kBudgetUs) break;
     uint8_t incomingByte = Serial2.read();
     sawInput = true;
     midiInCount++;
