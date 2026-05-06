@@ -2226,8 +2226,12 @@ void advanceSubMode() {
   else if (currentMode == INSTANT_MODE) enterDisplayMode(SEQUENCE_MODE);
   else enterDisplayMode(DIRECT_MODE);
 
-  const char* modeNames[] = {"DIRECT", "KEY", "INSTANT", "SEQUENCE"};
-  Serial.printf("Transpose mode: %s\n", modeNames[currentMode]);
+  // Use the lookup helper so we don't OOB-read past the array when
+  // currentMode is SEQUENCE_MODE (=4) or MIDI_MANAGE_MODE (=5). The bare
+  // `modeNames[currentMode]` indexed past a 4-entry array on every entry
+  // into SEQUENCE mode and depended on whatever memory followed being a
+  // valid C string — a latent crash that returns intermittently.
+  Serial.printf("Transpose mode: %s\n", getDisplayModeLabel(currentMode));
 }
 
 void processHardwareButtons() {
@@ -2291,9 +2295,10 @@ void processHardwareButtons() {
 
     needFullRedraw = true;
     lastButtonCheck = now;
-    const char* modeNames[] = {"DIRECT", "KEY", "INSTANT", "SEQUENCE"};
+    // Same OOB hazard as advanceSubMode — see comment there. Use the
+    // safe lookup so SEQUENCE_MODE (=4) doesn't read past the array.
     Serial.printf("Mode: %s, Transpose: %d (maintained)\n",
-                  modeNames[currentMode], transposeValue);
+                  getDisplayModeLabel(currentMode), transposeValue);
   }
 }
 
