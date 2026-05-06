@@ -336,9 +336,14 @@ PC から USB シリアルで本体を操作できます。
 - `GROUP TRANSPOSE`
 - `GROUP MIDI`
 - `SET TRANSPOSE n`
+- `SET FILTER BYPASS 0|1` / `SET FILTER ENABLED <n> 0|1`
+- `SET MAPPER BYPASS 0|1` / `SET MAPPER ENABLED <n> 0|1`
+- `LOAD TESTRULES` (リグレッション用 既知ルール一括投入)
 - `INFO SCREEN`
 - `SCREENSHOT PPM`
 - `SCREENSHOT RGB888`
+
+Tab5 側 (`M5Tab-MIDIXposeFil`) の `scripts/test_sequence.py` (6 フェーズ自動回帰テスト) と同じコマンドセットを揃えてあるので、共通スクリプトで本機にも回帰テストをかけられます。
 
 ### 使い方の考え方
 
