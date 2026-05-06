@@ -207,6 +207,7 @@ void formatMidiMapperRuleSummary(const MidiMapperRule& rule, int index, char* ou
 void adjustWrappedMidiKind(MidiMessageKind& kind, int delta);
 void normalizeMapperRule(MidiMapperRule& rule);
 void handleParsedMidiMessage(const MidiMessage& inMsg);
+void loadTestRules();
 void processUsbSerialCommands();
 void handleUsbSerialCommand(char* line);
 void printUsbSerialHelp();
@@ -460,6 +461,59 @@ void initMidiManagementDefaults() {
   midiMapperRules[0].dstData1 = -1;
   midiMapperRules[0].dstMin = 0;
   midiMapperRules[0].dstMax = 127;
+}
+
+// Populate two filter + two mapper rules with deterministic test content.
+// Used by `LOAD TESTRULES` USB-serial command from the regression script.
+// Both bypass flags stay at their current values; the orchestrator flips
+// them and per-rule .enabled as it walks through the 6 phases.
+//
+// filter[0] = block all PitchBend (any channel)
+// filter[1] = block all ControlChange (any channel)
+// mapper[0] = NoteOn Ch 1 -> NoteOn Ch 2 (move channel, keep velocity)
+// mapper[1] = NoteOn Ch 3 velocity 0..127 -> 0..63 (halve velocity)
+// (Filter 1 / 2 must hit message types midi_stress.py actually emits, hence
+// PB and CC rather than e.g. NoteOn-on-Ch10 — the stress fixture uses Ch1..4
+// only and so a Ch10 rule would never fire under this fixture.)
+//
+// Rules 0 and 1 of each chain are disjoint (no incoming message matches
+// both), so the mapper's first-match-wins semantics still let the x2 phase
+// observe both rules acting independently on different message subsets.
+void loadTestRules() {
+  midiFilterRuleCount = 2;
+  midiSelectedFilterRule = 0;
+  midiFilterRules[0].enabled = false;
+  midiFilterRules[0].kind = MIDI_KIND_PITCH_BEND;
+  midiFilterRules[0].channel = -1;
+  midiFilterRules[1].enabled = false;
+  midiFilterRules[1].kind = MIDI_KIND_CONTROL_CHANGE;
+  midiFilterRules[1].channel = -1;
+
+  midiMapperRuleCount = 2;
+  midiSelectedMapperRule = 0;
+  midiMapperRules[0].enabled = false;
+  midiMapperRules[0].srcKind = MIDI_KIND_NOTE_ON;
+  midiMapperRules[0].srcChannel = 0;       // MIDI Ch 1
+  midiMapperRules[0].srcData1 = -1;
+  midiMapperRules[0].srcMin = 0;
+  midiMapperRules[0].srcMax = 127;
+  midiMapperRules[0].dstKind = MIDI_KIND_NOTE_ON;
+  midiMapperRules[0].dstChannel = 1;       // MIDI Ch 2
+  midiMapperRules[0].dstData1 = -1;
+  midiMapperRules[0].dstMin = 0;
+  midiMapperRules[0].dstMax = 127;
+
+  midiMapperRules[1].enabled = false;
+  midiMapperRules[1].srcKind = MIDI_KIND_NOTE_ON;
+  midiMapperRules[1].srcChannel = 2;       // MIDI Ch 3
+  midiMapperRules[1].srcData1 = -1;
+  midiMapperRules[1].srcMin = 0;
+  midiMapperRules[1].srcMax = 127;
+  midiMapperRules[1].dstKind = MIDI_KIND_NOTE_ON;
+  midiMapperRules[1].dstChannel = -1;      // keep
+  midiMapperRules[1].dstData1 = -1;
+  midiMapperRules[1].dstMin = 0;
+  midiMapperRules[1].dstMax = 63;          // halve velocity
 }
 
 const char* getChannelLabel(int8_t channel, bool keepLabel) {
@@ -2947,6 +3001,11 @@ void printUsbSerialHelp() {
   Serial.println("MODE DIRECT|KEY|INSTANT|SEQUENCE|FILTER|MAPPER|MIDI");
   Serial.println("GROUP TRANSPOSE|MIDI");
   Serial.println("SET TRANSPOSE <-11..11>");
+  Serial.println("SET FILTER BYPASS 0|1");
+  Serial.println("SET FILTER ENABLED <n> 0|1");
+  Serial.println("SET MAPPER BYPASS 0|1");
+  Serial.println("SET MAPPER ENABLED <n> 0|1");
+  Serial.println("LOAD TESTRULES");
   Serial.println("SCREENSHOT [PPM|RGB888]");
   Serial.println("INFO SCREEN");
   Serial.println("OK HELP END");
@@ -3146,7 +3205,61 @@ void handleUsbSerialCommand(char* line) {
       Serial.printf("OK SET TRANSPOSE %d\n", transposeValue);
       return;
     }
-    Serial.println("ERR SET supports only TRANSPOSE");
+    if (target != nullptr && (tokenEqualsIgnoreCase(target, "FILTER") || tokenEqualsIgnoreCase(target, "MAPPER"))) {
+      const bool isFilter = tokenEqualsIgnoreCase(target, "FILTER");
+      char* sub = strtok_r(nullptr, " \t", &savePtr);
+      if (sub == nullptr) {
+        Serial.printf("ERR SET %s requires BYPASS or ENABLED\n", isFilter ? "FILTER" : "MAPPER");
+        return;
+      }
+      if (tokenEqualsIgnoreCase(sub, "BYPASS")) {
+        char* val = strtok_r(nullptr, " \t", &savePtr);
+        int v;
+        if (!parseIntValue(val, v) || (v != 0 && v != 1)) {
+          Serial.printf("ERR SET %s BYPASS requires 0 or 1\n", isFilter ? "FILTER" : "MAPPER");
+          return;
+        }
+        if (isFilter) midiFilterBypass = (v != 0);
+        else          midiMapperBypass = (v != 0);
+        needFullRedraw = true;
+        Serial.printf("OK SET %s BYPASS %d\n", isFilter ? "FILTER" : "MAPPER", v);
+        return;
+      }
+      if (tokenEqualsIgnoreCase(sub, "ENABLED")) {
+        char* idxToken = strtok_r(nullptr, " \t", &savePtr);
+        char* valToken = strtok_r(nullptr, " \t", &savePtr);
+        int idx, v;
+        const int ruleCount = isFilter ? midiFilterRuleCount : midiMapperRuleCount;
+        if (!parseIntValue(idxToken, idx) || !parseIntValue(valToken, v)
+            || idx < 1 || idx > ruleCount || (v != 0 && v != 1)) {
+          Serial.printf("ERR SET %s ENABLED <1..%d> 0|1\n",
+                        isFilter ? "FILTER" : "MAPPER", ruleCount);
+          return;
+        }
+        if (isFilter) midiFilterRules[idx - 1].enabled = (v != 0);
+        else          midiMapperRules[idx - 1].enabled = (v != 0);
+        needFullRedraw = true;
+        Serial.printf("OK SET %s ENABLED %d %d\n",
+                      isFilter ? "FILTER" : "MAPPER", idx, v);
+        return;
+      }
+      Serial.printf("ERR SET %s supports BYPASS or ENABLED\n", isFilter ? "FILTER" : "MAPPER");
+      return;
+    }
+    Serial.println("ERR SET supports TRANSPOSE, FILTER, MAPPER");
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "LOAD")) {
+    char* target = strtok_r(nullptr, " \t", &savePtr);
+    if (target != nullptr && tokenEqualsIgnoreCase(target, "TESTRULES")) {
+      loadTestRules();
+      needFullRedraw = true;
+      Serial.printf("OK LOAD TESTRULES filter=%d mapper=%d\n",
+                    midiFilterRuleCount, midiMapperRuleCount);
+      return;
+    }
+    Serial.println("ERR LOAD supports only TESTRULES");
     return;
   }
 
