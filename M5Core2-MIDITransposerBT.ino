@@ -1436,9 +1436,16 @@ void processHardwareButtons() {
 
     needFullRedraw = true;
     lastButtonCheck = now;
-    const char* modeNames[] = {"DIRECT", "KEY", "INSTANT", "SEQUENCE"};
+    const char* modeName;
+    switch (currentMode) {
+      case DIRECT_MODE:   modeName = "DIRECT"; break;
+      case KEY_MODE:      modeName = "KEY"; break;
+      case INSTANT_MODE:  modeName = "INSTANT"; break;
+      case SEQUENCE_MODE: modeName = "SEQUENCE"; break;
+      default:            modeName = "UNKNOWN"; break;
+    }
     Serial.printf("Mode: %s, Transpose: %d (maintained)\n",
-                  modeNames[currentMode], transposeValue);
+                  modeName, transposeValue);
   }
 }
 
