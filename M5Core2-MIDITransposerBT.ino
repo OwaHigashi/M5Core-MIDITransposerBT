@@ -1,3 +1,9 @@
+// ============================================================
+// DEPRECATED — This sketch is no longer maintained.
+// Use M5Core2-MIDIXposeFilBT / M5Core2-MIDIXposeFilBTUM /
+// M5Tab-MIDIXposeFil instead. Kept for history only.
+// ============================================================
+
 #include <M5Core2.h>
 
 // for SD-Updater
