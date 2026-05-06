@@ -5,6 +5,14 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 
 現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](/D:/M5/M5Core2-MIDIXposeFilBT/M5Core2-MIDIXposeFilBT.ino) です。
 
+起動時に Tab5 版と揃えた **OWAMIDICON** スプラッシュ (二重枠 + プログレスバー、約 3 秒) を表示してから通常画面に入ります。
+
+## 診断ビルド (任意)
+
+ビルド時に `-DM5TAB_DIAG` を付けると、5 秒ごとにシリアルへ
+`[mem] heap=… psram=… stack_hw=… midi_in=… midi_out=… …` を出力する
+軽量モニタが有効になります。製品ビルドではフラグなしで完全に無効化されます。
+
 ## 概要
 
 入力された MIDI メッセージに対して、次の順序で処理します。
