@@ -13,6 +13,33 @@ M5Core2 + M5 Unit MIDI (SAM2695) を使った **MIDI 演奏機 / トランスポ
 `[mem] heap=… psram=… stack_hw=… midi_in=… midi_out=… …` を出力する
 軽量モニタが有効になります。製品ビルドではフラグなしで完全に無効化されます。
 
+## 起動時設定 (`/config.json`)
+
+SD カード直下に `/config.json` を置くと、起動時の挙動を変えられます。  
+SD 未挿入 / `config.json` なし / パース失敗 はすべて静かに default 動作で続行します。
+
+サポートしているフィールド (型, 既定値):
+
+- `DefaultApp` (`Play`|`SMF`|`MP3`|`Transpose`|`Filter`|`Change`): 起動直後のモード
+- `DefaultTransposeMode` (`DIRECT`|`KEY`|`INSTANT`|`SEQUENCE`): `DefaultApp=Transpose` のとき
+- `InitialTranspose` (int): `TransposeBase` からのオフセット
+- `TransposeBase` (int): 全転調モード共通の基準値
+- `InitialAllNotesOff` / `InitialFilterBypass` / `InitialMapperBypass` (bool)
+- `TransposeRange` (`"0..11"` | `"-11..0"` | `"-5..6"`)
+- `MidiInputSource` (`USB`|`MIDIIN`|`MIX`): Tab5 用の項目で Core2 側は受け取るのみ
+- `MajorUpperTranspose` (bool): KEY モードの上位転調挙動
+- `BTAutoReconnect` (bool)
+- `ShowSplash` (bool): `false` でスプラッシュ表示をスキップ
+
+設定は本体からも編集できます。
+
+- **`B` 長押し**: `/config.json` エディタに入る (3 ページ × 4 フィールド、`SAVE` / `CANCEL` / `APPLY`)
+- **`A` 長押し**: 基準値設定モード (3 ページ — `L=-12..-1` / `M=-5..+6` / `R=+1..+12`)
+  - `+6` / `-5` で隣のページへ遷移、`-1` / `+1` で `M` ページに戻る
+  - `C` ボタンでページを巡回、`A` 再長押しで終了
+  - 基準値変更で現在の転調値が即時反映される
+- ボタンの短押しは release 時に判定するため、長押し中に短押しが誤発火することはありません
+
 ## ハードウェア
 
 - **本体**: M5Stack Core2
