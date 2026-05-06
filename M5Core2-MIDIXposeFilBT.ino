@@ -14,6 +14,15 @@
 #include "src/hid_l2cap.h"
 #include <Free_Fonts.h>
 
+// Define M5TAB_DIAG (e.g. via -DM5TAB_DIAG in arduino-cli build flags) to
+// enable the lightweight `[mem]` heap / stack / MIDI-counter monitor printed
+// every 5 s. Off by default so production builds carry zero diagnostic
+// overhead. (Flag name kept identical to the Tab5 sketch for consistency.)
+#ifdef M5TAB_DIAG
+#include <esp_system.h>
+#include <esp_heap_caps.h>
+#endif
+
 // ---- UIフォントヘルパー（GFXFFベースのきれいな描画に統一） ----
 // 旧 setTextSize(1)→Small, (2)→Medium, (3)→Large, (6)→Huge 相当
 static inline void uiFontSmall()  { M5.Lcd.setFreeFont(FSS9);   M5.Lcd.setTextSize(1); }
@@ -1143,65 +1152,84 @@ void key_callback(uint8_t *p_msg)
 
 // ---- 起動スプラッシュ "OWAMIDICON" ----
 static void showSplashScreen() {
+  // Mirrors the M5Tab-MIDIXposeFil opening: double frame, deco lines with
+  // corner accent dots, faded title, subtitle, progress bar, footer.
+  // Geometry/font scaled down for the 320×240 panel; animation timing,
+  // fade math, and progress-bar logic match Tab5's drawSplash() 1:1.
   const int W = SCREEN_WIDTH;
   const int H = SCREEN_HEIGHT;
+  const int cx = W / 2;
+  const int cy = H / 2;
 
-  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.fillScreen(TFT_BLACK);
 
-  // 上下のグラデーションバー (シアン→マゼンタ)
-  for (int i = 0; i < 6; i++) {
-    uint8_t r = (uint8_t)((i * 220) / 5);
-    uint8_t g = (uint8_t)(180 - i * 28);
-    uint8_t b = (uint8_t)(255 - i * 8);
-    uint16_t c = M5.Lcd.color565(r, g, b);
-    M5.Lcd.drawFastHLine(0, 26 + i, W, c);
-    M5.Lcd.drawFastHLine(0, H - 32 + i, W, c);
-  }
+  // Double frame (Tab5 used inset 50/54 on 1280×720 → 12/15 here).
+  M5.Lcd.drawRect(12, 12, W - 24, H - 24, 0x2104);
+  M5.Lcd.drawRect(15, 15, W - 30, H - 30, 0x18C3);
 
-  // 左右の縦アクセント線
-  M5.Lcd.drawFastVLine(6,     26, H - 58, M5.Lcd.color565(0, 200, 255));
-  M5.Lcd.drawFastVLine(W - 7, 26, H - 58, M5.Lcd.color565(220, 0, 255));
+  // Decorative lines flanking the title with accent dots at the corners.
+  // Tab5: cy ± 90, length 640. Scaled here: cy ± 30, length 200.
+  const int hlHalf = 100;
+  M5.Lcd.drawFastHLine(cx - hlHalf, cy - 30, hlHalf * 2, 0x39E7);
+  M5.Lcd.drawFastHLine(cx - hlHalf, cy + 30, hlHalf * 2, 0x39E7);
+  M5.Lcd.fillCircle(cx - hlHalf, cy - 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx + hlHalf, cy - 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx - hlHalf, cy + 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx + hlHalf, cy + 30, 2, TFT_CYAN);
 
-  // タイトル "OWAMIDICON" — グロー風 3 段シャドウ
-  uiFontHuge();
-  M5.Lcd.setTextDatum(MC_DATUM);
-  const char* title = "OWAMIDICON";
-  const int titleY = H / 2 - 22;
-  M5.Lcd.setTextColor(M5.Lcd.color565(0,  30,  90));
-  M5.Lcd.drawString(title, W / 2 + 3, titleY + 3);
-  M5.Lcd.setTextColor(M5.Lcd.color565(0, 110, 200));
-  M5.Lcd.drawString(title, W / 2 + 1, titleY + 1);
-  M5.Lcd.setTextColor(CYAN);
-  M5.Lcd.drawString(title, W / 2,     titleY);
-
-  // タイトル下の細い装飾ライン
-  M5.Lcd.drawFastHLine(W / 2 - 90, titleY + 24, 180, M5.Lcd.color565(0, 180, 255));
-  M5.Lcd.drawFastHLine(W / 2 - 60, titleY + 27, 120, M5.Lcd.color565(180, 0, 220));
-
-  // サブタイトル
+  // Subtitle just above the lower deco line. FSS9 (≈ Tab5's FONT_MED at
+  // half size) — "少し小さく" per request.
   uiFontSmall();
-  M5.Lcd.setTextColor(WHITE);
-  M5.Lcd.drawString("MIDI Transposer + MIDI Message Manager", W / 2, H / 2 + 28);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.setTextColor(0x8C71, TFT_BLACK);
+  M5.Lcd.drawString("MIDI Transposer - Mapper - BT Pedal + UM", cx, cy + 18);
 
-  // エディション表記
-  M5.Lcd.setTextColor(M5.Lcd.color565(200, 80, 220));
-  M5.Lcd.drawString("M5Stack Core2 Edition", W / 2, H / 2 + 50);
+  // Footer (analogue of Tab5's FONT_TINY line).
+  M5.Lcd.setTextFont(1);
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setTextColor(0x6B4D, TFT_BLACK);
+  M5.Lcd.drawString("for M5Stack Core2", cx, cy + 66);
 
-  // 下部ローディングバーのアニメーション
-  const int barX = 30;
-  const int barY = H - 50;
-  const int barW = W - 60;
-  const int barH = 4;
-  M5.Lcd.drawRect(barX - 1, barY - 1, barW + 2, barH + 2, DARKGREY);
-  for (int i = 0; i <= barW; i += 4) {
-    uint8_t r = (uint8_t)((i * 220) / barW);
-    uint8_t b = (uint8_t)(255 - (i * 60) / barW);
-    uint16_t c = M5.Lcd.color565(r, 100, b);
-    M5.Lcd.fillRect(barX + (i - 4 < 0 ? 0 : i - 4), barY, 4, barH, c);
-    delay(4);
+  // Progress bar frame (taller than Tab5's 4 px so the 2 px fill is visible).
+  const int pbW = 200;
+  const int pbH = 6;
+  const int pbX = cx - pbW / 2;
+  const int pbY = cy + 50;
+  M5.Lcd.drawRoundRect(pbX, pbY, pbW, pbH, 2, 0x4208);
+
+  const uint32_t totalMs = 3000;
+  const uint32_t startMs = millis();
+
+  uiFontMedium();   // FSSB12 — "少し小さい" analogue of Tab5's FSSB24 title
+  M5.Lcd.setTextDatum(MC_DATUM);
+
+  int lastFill = -1;
+  uint16_t lastTitleCol = 0xFFFE;  // unlikely value, forces first draw
+
+  while (true) {
+    uint32_t e = millis() - startMs;
+    if (e >= totalMs) break;
+
+    // Title fades in over the first 700 ms, holds, then fades out the last 300 ms.
+    uint8_t lum;
+    if (e < 700)                lum = (uint8_t)((uint32_t)255 * e / 700);
+    else if (e > totalMs - 300) lum = (uint8_t)((uint32_t)255 * (totalMs - e) / 300);
+    else                        lum = 255;
+
+    uint16_t tcol = M5.Lcd.color565(lum, lum, lum);
+    if (tcol != lastTitleCol) {
+      M5.Lcd.setTextColor(tcol, TFT_BLACK);
+      M5.Lcd.drawString("OWAMIDICON-Core2", cx, cy - 10);
+      lastTitleCol = tcol;
+    }
+
+    int fill = (int)((uint64_t)(pbW - 4) * e / totalMs);
+    if (fill != lastFill) {
+      if (fill > 0) M5.Lcd.fillRoundRect(pbX + 2, pbY + 2, fill, pbH - 4, 1, TFT_CYAN);
+      lastFill = fill;
+    }
+    delay(16);
   }
-
-  delay(700);
 }
 
 void setup() {
@@ -1299,13 +1327,56 @@ void setup() {
   Serial.println("MIDI Transposer Ready!");
   Serial.printf("Initial transpose: %d, Button 5 state: %s\n", transposeValue, transposeButtons[5] ? "ON" : "OFF");
   Serial.println("USB serial command interface ready. Type HELP for commands.");
+
+#ifdef M5TAB_DIAG
+  Serial.printf("[boot] Core2 MIDIXposeFilBTUM ready  panel=%dx%d  reset_reason=%d\n",
+                M5.Lcd.width(), M5.Lcd.height(), (int)esp_reset_reason());
+  Serial.printf("[boot] heap=%u psram=%u\n",
+                (unsigned)esp_get_free_heap_size(),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#endif
 }
 
+#ifdef M5TAB_DIAG
+// Lightweight memory + MIDI-flow monitor. Sampled once per loop() iteration
+// so transient drops between reports are still captured. Prints every 5 s.
+// `all_min` flat = no leak; `midi_in` rising = device is actually receiving
+// bytes (a flat midi_in is a deaf box, not a healthy one).
+static uint32_t g_diagLastReportMs = 0;
+static uint32_t g_diagWinMinHeap   = UINT32_MAX;
+
+static inline void diagSample() {
+  uint32_t heap = (uint32_t)esp_get_free_heap_size();
+  if (heap < g_diagWinMinHeap) g_diagWinMinHeap = heap;
+}
+
+static inline void diagMaybeReport(uint32_t nowMs) {
+  if (nowMs - g_diagLastReportMs < 5000) return;
+  uint32_t heapNow  = (uint32_t)esp_get_free_heap_size();
+  uint32_t allMin   = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+  uint32_t psramNow = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t psramMin = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t stackHW  = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+  Serial.printf("[mem] heap=%u win_min=%u all_min=%u psram=%u psram_min=%u stack_hw=%u midi_in=%lu midi_out=%lu uptime_ms=%u\n",
+                (unsigned)heapNow, (unsigned)g_diagWinMinHeap,
+                (unsigned)allMin, (unsigned)psramNow,
+                (unsigned)psramMin, (unsigned)stackHW,
+                midiInCount, midiOutCount, (unsigned)nowMs);
+  g_diagLastReportMs = nowMs;
+  g_diagWinMinHeap   = heapNow;
+}
+#else
+static inline void diagSample() {}
+static inline void diagMaybeReport(uint32_t /*nowMs*/) {}
+#endif
+
 void loop() {
+  diagSample();
   processMIDI();
 
   static unsigned long lastUICheck = 0;
   unsigned long now = millis();
+  diagMaybeReport((uint32_t)now);
 
   if (now - lastUICheck >= 20) {
     M5.update();

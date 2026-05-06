@@ -1,1 +1,11 @@
 build/
+
+# Claude Code session
+.claude/
+
+# Test / capture artifacts
+*.log
+chat.txt
+screenshots/
+*.pdf
+
