@@ -13,6 +13,7 @@
 
 #include "src/hid_l2cap.h"
 #include <Free_Fonts.h>
+#include <ArduinoJson.h>
 
 // Define M5TAB_DIAG (e.g. via -DM5TAB_DIAG in arduino-cli build flags) to
 // enable the lightweight `[mem]` heap / stack monitor printed every 5 s.
@@ -68,7 +69,9 @@ enum DisplayMode {
   KEY_MODE,
   INSTANT_MODE,
   SEQUENCE_MODE,
-  MIDI_MANAGE_MODE
+  MIDI_MANAGE_MODE,
+  CONFIG_EDIT_MODE,    // B long-press: edit /config.json
+  BASE_SET_MODE        // A long-press: pick transpose base reference
 };
 
 enum MidiManagePage {
@@ -208,6 +211,20 @@ void adjustWrappedMidiKind(MidiMessageKind& kind, int delta);
 void normalizeMapperRule(MidiMapperRule& rule);
 void handleParsedMidiMessage(const MidiMessage& inMsg);
 void loadTestRules();
+void setDefaultConfig();
+bool loadDeviceConfigFromSD();
+bool saveDeviceConfigToSD();
+void applyDeviceConfig();
+void enterConfigEditMode();
+void exitConfigEditMode(bool save, bool apply);
+void drawConfigEditMode();
+void processConfigEditTouch(TouchPoint_t pos);
+void enterBaseSetMode();
+void exitBaseSetMode();
+void drawBaseSetMode();
+void processBaseSetTouch(TouchPoint_t pos);
+void cycleBaseSetPage();
+void setTransposeBase(int newBase);
 void processUsbSerialCommands();
 void handleUsbSerialCommand(char* line);
 void printUsbSerialHelp();
@@ -887,6 +904,130 @@ bool ensureSDReady() {
   return false;
 }
 
+struct DeviceConfig {
+  char defaultApp[16];
+  char defaultTransposeMode[16];
+  int  initialTranspose;
+  int  transposeBase;
+  bool initialAllNotesOff;
+  bool initialFilterBypass;
+  bool initialMapperBypass;
+  char transposeRange[12];
+  char midiInputSource[12];
+  bool majorUpperTranspose;
+  bool btAutoReconnect;
+  bool showSplash;
+};
+
+DeviceConfig g_config;
+
+void setDefaultConfig() {
+  strncpy(g_config.defaultApp, "Transpose", sizeof(g_config.defaultApp));
+  strncpy(g_config.defaultTransposeMode, "DIRECT", sizeof(g_config.defaultTransposeMode));
+  g_config.initialTranspose = 0;
+  g_config.transposeBase = 0;
+  g_config.initialAllNotesOff = false;
+  g_config.initialFilterBypass = true;
+  g_config.initialMapperBypass = true;
+  strncpy(g_config.transposeRange, "-5..6", sizeof(g_config.transposeRange));
+  strncpy(g_config.midiInputSource, "MIX", sizeof(g_config.midiInputSource));
+  g_config.majorUpperTranspose = false;
+  g_config.btAutoReconnect = true;
+  g_config.showSplash = true;
+}
+
+bool loadDeviceConfigFromSD() {
+  if (SD.cardType() == CARD_NONE) {
+    Serial.println("[CFG] no SD card — using defaults");
+    return false;
+  }
+  if (!SD.exists("/config.json")) {
+    Serial.println("[CFG] /config.json not found — using defaults");
+    return false;
+  }
+  File f = SD.open("/config.json", FILE_READ);
+  if (!f) {
+    Serial.println("[CFG] open failed — using defaults");
+    return false;
+  }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err) {
+    Serial.printf("[CFG] parse error %s — using defaults\n", err.c_str());
+    return false;
+  }
+  if (doc["DefaultApp"].is<const char*>())           strncpy(g_config.defaultApp, doc["DefaultApp"], sizeof(g_config.defaultApp));
+  if (doc["DefaultTransposeMode"].is<const char*>()) strncpy(g_config.defaultTransposeMode, doc["DefaultTransposeMode"], sizeof(g_config.defaultTransposeMode));
+  if (doc["InitialTranspose"].is<int>())             g_config.initialTranspose = doc["InitialTranspose"];
+  if (doc["TransposeBase"].is<int>())                g_config.transposeBase = doc["TransposeBase"];
+  if (doc["InitialAllNotesOff"].is<bool>())          g_config.initialAllNotesOff = doc["InitialAllNotesOff"];
+  if (doc["InitialFilterBypass"].is<bool>())         g_config.initialFilterBypass = doc["InitialFilterBypass"];
+  if (doc["InitialMapperBypass"].is<bool>())         g_config.initialMapperBypass = doc["InitialMapperBypass"];
+  if (doc["TransposeRange"].is<const char*>())       strncpy(g_config.transposeRange, doc["TransposeRange"], sizeof(g_config.transposeRange));
+  if (doc["MidiInputSource"].is<const char*>())      strncpy(g_config.midiInputSource, doc["MidiInputSource"], sizeof(g_config.midiInputSource));
+  if (doc["MajorUpperTranspose"].is<bool>())         g_config.majorUpperTranspose = doc["MajorUpperTranspose"];
+  if (doc["BTAutoReconnect"].is<bool>())             g_config.btAutoReconnect = doc["BTAutoReconnect"];
+  if (doc["ShowSplash"].is<bool>())                  g_config.showSplash = doc["ShowSplash"];
+  Serial.printf("[CFG] loaded: app=%s base=%d splash=%d\n",
+                g_config.defaultApp, g_config.transposeBase, g_config.showSplash ? 1 : 0);
+  return true;
+}
+
+bool saveDeviceConfigToSD() {
+  if (!ensureSDReady()) {
+    Serial.println("[CFG] save failed: SD not ready");
+    return false;
+  }
+  JsonDocument doc;
+  doc["DefaultApp"]            = g_config.defaultApp;
+  doc["DefaultTransposeMode"]  = g_config.defaultTransposeMode;
+  doc["InitialTranspose"]      = g_config.initialTranspose;
+  doc["TransposeBase"]         = g_config.transposeBase;
+  doc["InitialAllNotesOff"]    = g_config.initialAllNotesOff;
+  doc["InitialFilterBypass"]   = g_config.initialFilterBypass;
+  doc["InitialMapperBypass"]   = g_config.initialMapperBypass;
+  doc["TransposeRange"]        = g_config.transposeRange;
+  doc["MidiInputSource"]       = g_config.midiInputSource;
+  doc["MajorUpperTranspose"]   = g_config.majorUpperTranspose;
+  doc["BTAutoReconnect"]       = g_config.btAutoReconnect;
+  doc["ShowSplash"]            = g_config.showSplash;
+  File f = SD.open("/config.json", FILE_WRITE);
+  if (!f) { Serial.println("[CFG] save: open failed"); return false; }
+  size_t n = serializeJsonPretty(doc, f);
+  f.close();
+  Serial.printf("[CFG] saved %u bytes\n", (unsigned)n);
+  return n > 0;
+}
+
+void applyDeviceConfig() {
+  allNotesOffEnabled = g_config.initialAllNotesOff;
+  midiFilterBypass = g_config.initialFilterBypass;
+  midiMapperBypass = g_config.initialMapperBypass;
+  if (strcmp(g_config.transposeRange, "0..11") == 0)        transposeRange = RANGE_0_TO_12;
+  else if (strcmp(g_config.transposeRange, "-11..0") == 0)  transposeRange = RANGE_MINUS12_TO_0;
+  else                                                       transposeRange = RANGE_MINUS5_TO_6;
+  // initial transpose = base + offset (Phase 2 will use base in selection math)
+  handleTransposeChange(clampTranspose((int8_t)(g_config.transposeBase + g_config.initialTranspose)));
+  // Switch to default app
+  if (strcmp(g_config.defaultApp, "Play") == 0
+      || strcmp(g_config.defaultApp, "SMF") == 0
+      || strcmp(g_config.defaultApp, "MP3") == 0) {
+    enterDisplayMode(DIRECT_MODE);
+  } else if (strcmp(g_config.defaultApp, "Filter") == 0) {
+    midiManagePage = MIDI_PAGE_FILTER;
+    enterDisplayMode(MIDI_MANAGE_MODE);
+  } else if (strcmp(g_config.defaultApp, "Change") == 0) {
+    midiManagePage = MIDI_PAGE_MAPPER;
+    enterDisplayMode(MIDI_MANAGE_MODE);
+  } else { // Transpose default
+    if      (strcmp(g_config.defaultTransposeMode, "KEY") == 0)      enterDisplayMode(KEY_MODE);
+    else if (strcmp(g_config.defaultTransposeMode, "INSTANT") == 0)  enterDisplayMode(INSTANT_MODE);
+    else if (strcmp(g_config.defaultTransposeMode, "SEQUENCE") == 0) enterDisplayMode(SEQUENCE_MODE);
+    else                                                              enterDisplayMode(DIRECT_MODE);
+  }
+}
+
 bool saveSequencesToSD() {
   if (!ensureSDReady()) {
     Serial.println("[SEQ] Save failed: SD card not ready");
@@ -1116,6 +1257,8 @@ void setup() {
   // SDカードからシーケンスパターンを読み込み
   Serial.println("Loading sequence patterns from SD...");
   loadSequencesFromSD();
+  setDefaultConfig();
+  loadDeviceConfigFromSD();
 
   // 最初の転調値0のボタンを確実に光らせる（-5から+6レンジでは5番目のボタン）
   transposeButtons[5] = true;  // RANGE_MINUS5_TO_6の場合、ボタン5が転調値0
@@ -1141,7 +1284,10 @@ void setup() {
   }
 
   M5.Lcd.fillScreen(BLACK);
-  showSplashScreen();
+  if (g_config.showSplash) {
+    showSplashScreen();
+  }
+  applyDeviceConfig();
   drawInterface();
 
   Serial.println("MIDI Transposer Ready!");
@@ -1545,6 +1691,10 @@ void drawInterface() {
     drawInstantMode();
   } else if (currentMode == SEQUENCE_MODE) {
     drawSequenceMode();
+  } else if (currentMode == CONFIG_EDIT_MODE) {
+    drawConfigEditMode();
+  } else if (currentMode == BASE_SET_MODE) {
+    drawBaseSetMode();
   } else {
     drawMidiManageMode();
   }
@@ -2236,35 +2386,57 @@ void advanceSubMode() {
 
 void processHardwareButtons() {
   unsigned long now = millis();
-  if (M5.BtnC.isPressed()) {
-    if (!btnCLongPressHandled && M5.BtnC.pressedFor(MODE_LONG_PRESS_MS)) {
-      handleButtonCLongAction();
-      btnCLongPressHandled = true;
-      lastButtonCheck = now;
-    }
-  } else {
-    btnCLongPressHandled = false;
+  static bool btnALongPressHandled = false;
+  static bool btnBLongPressHandled = false;
+
+  // ── 長押し検出 (押下中に MODE_LONG_PRESS_MS 経過したら一度だけ発火) ──
+  // 重要: ここではフラグをリセットしない。リリース時の短押し判定が
+  // フラグを参照してから、その後でリセットする (ブロックの末尾で)。
+  if (M5.BtnC.isPressed() && !btnCLongPressHandled
+      && M5.BtnC.pressedFor(MODE_LONG_PRESS_MS)) {
+    handleButtonCLongAction();
+    btnCLongPressHandled = true;
+    lastButtonCheck = now;
+  }
+  if (M5.BtnB.isPressed() && !btnBLongPressHandled
+      && M5.BtnB.pressedFor(MODE_LONG_PRESS_MS)) {
+    enterConfigEditMode();
+    btnBLongPressHandled = true;
+    lastButtonCheck = now;
+  }
+  if (M5.BtnA.isPressed() && !btnALongPressHandled
+      && M5.BtnA.pressedFor(MODE_LONG_PRESS_MS)) {
+    if (currentMode == BASE_SET_MODE) exitBaseSetMode();
+    else                              enterBaseSetMode();
+    btnALongPressHandled = true;
+    lastButtonCheck = now;
   }
 
   if (now - lastButtonCheck < BUTTON_DEBOUNCE) return;
 
-  // 左ボタン（A）: All Notes Off切り替え
-  if (M5.BtnA.wasPressed()) {
-    handleButtonAAction();
+  // ── 短押しはリリース時判定。長押しフラグが立っていればスキップ ──
+  // 各ボタンとも「リリースを観測 → 短押し処理 (長押し未発火時のみ) →
+  // 長押しフラグをリセット」の順。これにより長押し中の release 判定で
+  // 短押しが誤発火しない。
+
+  if (M5.BtnA.wasReleased()) {
+    if (!btnALongPressHandled) handleButtonAAction();
+    btnALongPressHandled = false;
     lastButtonCheck = now;
     return;
   }
-
-  // 真ん中ボタン（B）
-  if (M5.BtnB.wasPressed()) {
-    handleButtonBAction();
+  if (M5.BtnB.wasReleased()) {
+    if (!btnBLongPressHandled) handleButtonBAction();
+    btnBLongPressHandled = false;
     lastButtonCheck = now;
     return;
   }
-
-  // 右ボタン（C）: モード切り替え（DIRECT→KEY→INSTANT→SEQUENCE→…）
-  if (M5.BtnC.wasPressed() && !btnCLongPressHandled) {
-    handleButtonCShortAction();
+  if (M5.BtnC.wasReleased()) {
+    if (!btnCLongPressHandled) {
+      if (currentMode == BASE_SET_MODE) cycleBaseSetPage();
+      else                              handleButtonCShortAction();
+    }
+    btnCLongPressHandled = false;
     lastButtonCheck = now;
   }
 
@@ -2506,6 +2678,344 @@ void processInstantModeTouch(TouchPoint_t pos) {
     if (pos.x >= instantButtons[i].x && pos.x <= instantButtons[i].x + instantButtons[i].w &&
         pos.y >= instantButtons[i].y && pos.y <= instantButtons[i].y + instantButtons[i].h) {
       handleTransposeChange(instantButtons[i].value);
+      needFullRedraw = true;
+      return;
+    }
+  }
+}
+
+// ============================================================
+// CONFIG_EDIT_MODE — entered via B long-press, edits /config.json
+// ============================================================
+// Single-page list view: 12 rows, tap row to cycle field's value.
+// Bottom bar: SAVE / CANCEL / APPLY.
+//   SAVE   = write to SD, exit to mode that was active before entering editor
+//   CANCEL = restore in-memory copy from snapshot, exit
+//   APPLY  = SAVE + applyDeviceConfig() (jump to DefaultApp's mode now)
+//
+// Operates on g_config in place. snapshot is taken on enter so CANCEL
+// can revert. SAVE / APPLY commit to SD.
+static DeviceConfig g_configSnapshot;
+static DisplayMode g_modeBeforeOverlay = DIRECT_MODE;
+
+static const int CFG_ROWS = 12;
+static const int CFG_ROWS_PER_PAGE = 4;
+static const int CFG_PAGES = 3;        // 4 × 3 = 12
+static int g_configPage = 0;
+static const char* CFG_LABELS[CFG_ROWS] = {
+  // Page 1: Boot defaults
+  "DefaultApp",
+  "DefTransMode",
+  "InitTranspose",
+  "TransposeBase",
+  // Page 2: Initial runtime state
+  "AllNotesOff",
+  "FilterBypass",
+  "MapperBypass",
+  "TransposeRange",
+  // Page 3: Misc
+  "MidiInputSrc",
+  "MajorUpperTr",
+  "BTAutoReconn",
+  "ShowSplash",
+};
+
+static void cycleString(char* dst, size_t cap, const char* const* options, int n) {
+  int idx = 0;
+  for (int i = 0; i < n; i++) if (strcmp(dst, options[i]) == 0) { idx = i; break; }
+  idx = (idx + 1) % n;
+  strncpy(dst, options[idx], cap);
+  dst[cap - 1] = '\0';
+}
+
+static void cfgFormatValue(int row, char* out, size_t outSize) {
+  switch (row) {
+    case 0: snprintf(out, outSize, "%s", g_config.defaultApp); break;
+    case 1: snprintf(out, outSize, "%s", g_config.defaultTransposeMode); break;
+    case 2: snprintf(out, outSize, "%+d", g_config.initialTranspose); break;
+    case 3: snprintf(out, outSize, "%+d", g_config.transposeBase); break;
+    case 4: snprintf(out, outSize, "%s", g_config.initialAllNotesOff ? "ON" : "OFF"); break;
+    case 5: snprintf(out, outSize, "%s", g_config.initialFilterBypass ? "ON" : "OFF"); break;
+    case 6: snprintf(out, outSize, "%s", g_config.initialMapperBypass ? "ON" : "OFF"); break;
+    case 7: snprintf(out, outSize, "%s", g_config.transposeRange); break;
+    case 8: snprintf(out, outSize, "%s", g_config.midiInputSource); break;
+    case 9: snprintf(out, outSize, "%s", g_config.majorUpperTranspose ? "ON" : "OFF"); break;
+    case 10: snprintf(out, outSize, "%s", g_config.btAutoReconnect ? "ON" : "OFF"); break;
+    case 11: snprintf(out, outSize, "%s", g_config.showSplash ? "ON" : "OFF"); break;
+    default: out[0] = '\0';
+  }
+}
+
+static void cfgCycleValue(int row) {
+  static const char* APPS[]   = {"Transpose","Play","SMF","MP3","Filter","Change"};
+  static const char* TMODES[] = {"DIRECT","KEY","INSTANT","SEQUENCE"};
+  static const char* RANGES[] = {"-5..6","0..11","-11..0"};
+  static const char* INPUTS[] = {"MIX","MIDIIN","USB"};
+  switch (row) {
+    case 0: cycleString(g_config.defaultApp, sizeof(g_config.defaultApp), APPS, 6); break;
+    case 1: cycleString(g_config.defaultTransposeMode, sizeof(g_config.defaultTransposeMode), TMODES, 4); break;
+    case 2: g_config.initialTranspose = (g_config.initialTranspose >= 11) ? -11 : g_config.initialTranspose + 1; break;
+    case 3: g_config.transposeBase    = (g_config.transposeBase    >= 11) ? -11 : g_config.transposeBase + 1; break;
+    case 4: g_config.initialAllNotesOff = !g_config.initialAllNotesOff; break;
+    case 5: g_config.initialFilterBypass = !g_config.initialFilterBypass; break;
+    case 6: g_config.initialMapperBypass = !g_config.initialMapperBypass; break;
+    case 7: cycleString(g_config.transposeRange, sizeof(g_config.transposeRange), RANGES, 3); break;
+    case 8: cycleString(g_config.midiInputSource, sizeof(g_config.midiInputSource), INPUTS, 3); break;
+    case 9: g_config.majorUpperTranspose = !g_config.majorUpperTranspose; break;
+    case 10: g_config.btAutoReconnect = !g_config.btAutoReconnect; break;
+    case 11: g_config.showSplash = !g_config.showSplash; break;
+  }
+}
+
+void enterConfigEditMode() {
+  g_modeBeforeOverlay = currentMode;
+  g_configSnapshot = g_config;
+  g_configPage = 0;
+  enterDisplayMode(CONFIG_EDIT_MODE);
+}
+
+void exitConfigEditMode(bool save, bool apply) {
+  if (!save && !apply) {
+    // CANCEL — revert
+    g_config = g_configSnapshot;
+  } else {
+    saveDeviceConfigToSD();
+    if (apply) {
+      applyDeviceConfig();
+      needFullRedraw = true;
+      return;  // applyDeviceConfig sets a fresh mode
+    }
+  }
+  enterDisplayMode(g_modeBeforeOverlay);
+}
+
+// Layout: header y=0..40 (existing). Below the header divider:
+//   Page nav strip   y=44..72  (28px) — "Page n/3" + [<] [>]
+//   Field rows       y=76..196 (4 rows × 30px) — tap row to cycle value
+//   Footer buttons   y=204..234 (30px) — SAVE / CANCEL / APPLY
+// 12 fields split into 3 pages of 4 each so rows stay tappable on a 320×240
+// screen without overlapping the AllOff/BT/I-O header strip.
+void drawConfigEditMode() {
+  M5.Lcd.fillRect(0, 41, SCREEN_WIDTH, SCREEN_HEIGHT - 41, BLACK);
+
+  // Page navigation strip
+  const int navY = 44, navH = 28;
+  M5.Lcd.fillRect(0, navY, SCREEN_WIDTH, navH, NAVY);
+  M5.Lcd.drawRect(50, navY, 220, navH, WHITE);  // central title box
+  uiFontMedium();
+  M5.Lcd.setTextColor(YELLOW);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  char pgStr[24];
+  snprintf(pgStr, sizeof(pgStr), "Config %d/%d (B-long)", g_configPage + 1, CFG_PAGES);
+  M5.Lcd.drawString(pgStr, SCREEN_WIDTH / 2, navY + navH / 2);
+  // < page-prev (left)
+  M5.Lcd.fillRect(5, navY, 40, navH, BLUE);
+  M5.Lcd.drawRect(5, navY, 40, navH, WHITE);
+  M5.Lcd.setTextColor(WHITE);
+  uiDrawC("<", 5, navY, 40, navH);
+  // > page-next (right)
+  M5.Lcd.fillRect(SCREEN_WIDTH - 45, navY, 40, navH, BLUE);
+  M5.Lcd.drawRect(SCREEN_WIDTH - 45, navY, 40, navH, WHITE);
+  uiDrawC(">", SCREEN_WIDTH - 45, navY, 40, navH);
+
+  // Field rows for current page
+  uiFontSmall();
+  M5.Lcd.setTextDatum(ML_DATUM);
+  const int rowY0 = 76;
+  const int rowH  = 30;
+  for (int r = 0; r < CFG_ROWS_PER_PAGE; r++) {
+    int field = g_configPage * CFG_ROWS_PER_PAGE + r;
+    if (field >= CFG_ROWS) break;
+    int y = rowY0 + r * rowH;
+    M5.Lcd.fillRect(0, y, SCREEN_WIDTH, rowH - 2, 0x18C3);
+    M5.Lcd.drawRect(0, y, SCREEN_WIDTH, rowH - 2, 0x4208);
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.drawString(CFG_LABELS[field], 8, y + (rowH - 2) / 2);
+    char val[24];
+    cfgFormatValue(field, val, sizeof(val));
+    M5.Lcd.setTextColor(CYAN);
+    M5.Lcd.setTextDatum(MR_DATUM);
+    M5.Lcd.drawString(val, SCREEN_WIDTH - 8, y + (rowH - 2) / 2);
+    M5.Lcd.setTextDatum(ML_DATUM);
+  }
+
+  // Footer buttons (y=204..234)
+  M5.Lcd.setTextDatum(MC_DATUM);
+  const int btnY = 204, btnH = 30;
+  M5.Lcd.fillRect(8, btnY, 96, btnH, 0x03E0);
+  M5.Lcd.drawRect(8, btnY, 96, btnH, WHITE);
+  M5.Lcd.setTextColor(WHITE); uiFontMedium();
+  uiDrawC("SAVE", 8, btnY, 96, btnH);
+  M5.Lcd.fillRect(112, btnY, 96, btnH, RED);
+  M5.Lcd.drawRect(112, btnY, 96, btnH, WHITE);
+  uiDrawC("CANCEL", 112, btnY, 96, btnH);
+  M5.Lcd.fillRect(216, btnY, 96, btnH, BLUE);
+  M5.Lcd.drawRect(216, btnY, 96, btnH, WHITE);
+  uiDrawC("APPLY", 216, btnY, 96, btnH);
+}
+
+void processConfigEditTouch(TouchPoint_t pos) {
+  // Page-nav strip
+  const int navY = 44, navH = 28;
+  if (pos.y >= navY && pos.y <= navY + navH) {
+    if (pos.x >= 5 && pos.x <= 45) {
+      g_configPage = (g_configPage + CFG_PAGES - 1) % CFG_PAGES;
+      needFullRedraw = true;
+      return;
+    }
+    if (pos.x >= SCREEN_WIDTH - 45 && pos.x <= SCREEN_WIDTH - 5) {
+      g_configPage = (g_configPage + 1) % CFG_PAGES;
+      needFullRedraw = true;
+      return;
+    }
+  }
+  // Footer buttons
+  if (pos.y >= 204 && pos.y <= 234) {
+    if (pos.x >= 8   && pos.x <= 104) { exitConfigEditMode(true,  false); return; }
+    if (pos.x >= 112 && pos.x <= 208) { exitConfigEditMode(false, false); return; }
+    if (pos.x >= 216 && pos.x <= 312) { exitConfigEditMode(true,  true);  return; }
+  }
+  // Field rows for current page
+  const int rowY0 = 76, rowH = 30;
+  for (int r = 0; r < CFG_ROWS_PER_PAGE; r++) {
+    int field = g_configPage * CFG_ROWS_PER_PAGE + r;
+    if (field >= CFG_ROWS) break;
+    int y = rowY0 + r * rowH;
+    if (pos.y >= y && pos.y < y + rowH - 2) {
+      cfgCycleValue(field);
+      needFullRedraw = true;
+      return;
+    }
+  }
+}
+
+// ============================================================
+// BASE_SET_MODE — A long-press: pick the transpose base reference
+// ============================================================
+// All transpose values selected in DIRECT/KEY/INSTANT/SEQUENCE become
+// (base + offset). Changing the base re-applies transpose immediately
+// (we shift the current effective transpose by the base delta — keeps
+// the user's last selection in the new base frame).
+//
+// The base picker is laid out like the DIRECT 4×3 grid but spans three
+// pages so the full -12..+12 range is reachable:
+//   page L: -12..-1   (entered by tapping -5 on page M, or via C button)
+//   page M: -5..+6    (default entry; mirrors DIRECT mode's range)
+//   page R: +1..+12   (entered by tapping +6 on page M)
+// Tapping -1 on page L or +1 on page R returns to page M (per spec).
+// C button cycles L → M → R → L. A long-press exits the mode entirely.
+static int g_basePage = 0;            // -1=L, 0=M, +1=R
+static DisplayMode g_modeBeforeBase = DIRECT_MODE;
+
+static void getBasePageRange(int page, int* lo, int* hi) {
+  if (page == -1)     { *lo = -12; *hi = -1; }
+  else if (page == 1) { *lo =   1; *hi = 12; }
+  else                { *lo =  -5; *hi =  6; }
+}
+
+static int basePageValueAt(int page, int idx) {
+  int lo, hi; getBasePageRange(page, &lo, &hi);
+  return lo + idx;
+}
+
+static int pageContainingBase(int base) {
+  if (base < -5)     return -1;
+  else if (base > 6) return 1;
+  else                return 0;
+}
+
+void setTransposeBase(int newBase) {
+  newBase = clampTranspose((int8_t)newBase);
+  int delta = newBase - g_config.transposeBase;
+  g_config.transposeBase = newBase;
+  if (delta != 0) {
+    // Apply immediately — shift the current effective transpose by delta so
+    // any user-selected offset in DIRECT/KEY/INSTANT/SEQUENCE follows the
+    // new base.
+    handleTransposeChange(clampTranspose((int8_t)(transposeValue + delta)));
+  }
+  needFullRedraw = true;
+}
+
+void enterBaseSetMode() {
+  g_modeBeforeBase = currentMode;
+  g_basePage = pageContainingBase(g_config.transposeBase);
+  enterDisplayMode(BASE_SET_MODE);
+}
+
+void exitBaseSetMode() {
+  enterDisplayMode(g_modeBeforeBase);
+}
+
+void cycleBaseSetPage() {
+  // L (-1) → M (0) → R (+1) → L
+  if (g_basePage == -1)      g_basePage = 0;
+  else if (g_basePage == 0)  g_basePage = 1;
+  else                       g_basePage = -1;
+  needFullRedraw = true;
+}
+
+void drawBaseSetMode() {
+  M5.Lcd.fillRect(0, 41, SCREEN_WIDTH, SCREEN_HEIGHT - 41, BLACK);
+
+  // Title strip
+  M5.Lcd.fillRect(0, 41, SCREEN_WIDTH, 22, NAVY);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  uiFontSmall();
+  M5.Lcd.setTextColor(YELLOW);
+  char title[40];
+  const char* pgLabel = (g_basePage == -1) ? "L (-12..-1)"
+                       : (g_basePage == 1) ? "R (+1..+12)"
+                                            : "M (-5..+6)";
+  snprintf(title, sizeof(title), "Base = %+d   Page %s   (A-long: exit  C: page)",
+           g_config.transposeBase, pgLabel);
+  M5.Lcd.drawString(title, SCREEN_WIDTH / 2, 52);
+
+  // 4×3 grid mirroring DIRECT mode (75×60 buttons, 5×4 spacing, start (10, 66))
+  const int btnW = 75, btnH = 56, gapX = 5, gapY = 4;
+  const int startX = 10, startY = 68;
+  const int colsPerRow = 4;
+  uiFontLarge();
+  for (int i = 0; i < 12; i++) {
+    int col = i % colsPerRow;
+    int row = i / colsPerRow;
+    int x = startX + col * (btnW + gapX);
+    int y = startY + row * (btnH + gapY);
+    int val = basePageValueAt(g_basePage, i);
+    bool selected = (val == g_config.transposeBase);
+    uint16_t bg = selected ? GREEN : DARKGREY;
+    uint16_t txtCol = selected ? BLACK : WHITE;
+    M5.Lcd.fillRect(x, y, btnW, btnH, bg);
+    M5.Lcd.drawRect(x, y, btnW, btnH, WHITE);
+    M5.Lcd.setTextColor(txtCol);
+    char vs[6];
+    if (val > 0) snprintf(vs, sizeof(vs), "+%d", val);
+    else         snprintf(vs, sizeof(vs), "%d", val);
+    uiDrawC(vs, x, y, btnW, btnH);
+  }
+}
+
+void processBaseSetTouch(TouchPoint_t pos) {
+  const int btnW = 75, btnH = 56, gapX = 5, gapY = 4;
+  const int startX = 10, startY = 68;
+  const int colsPerRow = 4;
+  for (int i = 0; i < 12; i++) {
+    int col = i % colsPerRow;
+    int row = i / colsPerRow;
+    int x = startX + col * (btnW + gapX);
+    int y = startY + row * (btnH + gapY);
+    if (pos.x >= x && pos.x < x + btnW && pos.y >= y && pos.y < y + btnH) {
+      int val = basePageValueAt(g_basePage, i);
+      setTransposeBase(val);
+      // Page transitions per spec.
+      if (g_basePage == 0) {
+        if (val == 6)       g_basePage = 1;   // M → R
+        else if (val == -5) g_basePage = -1;  // M → L
+      } else if (g_basePage == 1) {
+        if (val == 1) g_basePage = 0;          // R → M
+      } else { // L
+        if (val == -1) g_basePage = 0;         // L → M
+      }
       needFullRedraw = true;
       return;
     }
@@ -2813,6 +3323,8 @@ const char* getDisplayModeLabel(DisplayMode mode) {
     case INSTANT_MODE: return "INSTANT";
     case SEQUENCE_MODE: return "SEQUENCE";
     case MIDI_MANAGE_MODE: return "MIDI_MANAGER";
+    case CONFIG_EDIT_MODE: return "CONFIG_EDIT";
+    case BASE_SET_MODE: return "BASE_SET";
     default: return "UNKNOWN";
   }
 }
@@ -2908,6 +3420,10 @@ void dispatchTouchPoint(TouchPoint_t pos) {
     processInstantModeTouch(pos);
   } else if (currentMode == SEQUENCE_MODE) {
     processSequenceModeTouch(pos);
+  } else if (currentMode == CONFIG_EDIT_MODE) {
+    processConfigEditTouch(pos);
+  } else if (currentMode == BASE_SET_MODE) {
+    processBaseSetTouch(pos);
   } else {
     processMidiManageTouch(pos);
   }

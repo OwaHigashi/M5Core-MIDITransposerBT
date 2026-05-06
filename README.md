@@ -326,3 +326,19 @@ PC 側 GUI で直接扱いやすい、生の `RGB888` バイト列です。
 4. 再度 `SCREENSHOT ...` を取得
 
 この仕組みにより、後で PC 側から大画面 UI を作るときに、本体画面を見ながら既存 UI をそのまま遠隔操作できます。
+
+## デバイス設定 `/config.json` と長押し操作 (Phase 1+2)
+
+SD カード直下の `/config.json` で起動時の動作をまとめて設定できます。
+設定項目は `DefaultApp`, `DefaultTransposeMode`, `InitialTranspose`, `TransposeBase`,
+`InitialAllNotesOff`, `InitialFilterBypass`, `InitialMapperBypass`,
+`TransposeRange`, `MidiInputSource`, `MajorUpperTranspose`, `BTAutoReconnect`,
+`ShowSplash` の 12 項目です。ファイルが無ければ内蔵デフォルトで起動します。
+
+- **B 長押し** → 設定エディタを開きます。3 ページ × 4 項目 (計 12) の一覧で、
+  行をタップして値を循環、最下段の `SAVE` / `CANCEL` / `APPLY` で確定 / 取消 /
+  即時反映を選びます。`APPLY` を押すと `DefaultApp` に従ったモードへ遷移します。
+- **A 長押し** → 転調基準 (`TransposeBase`) を選ぶピッカーに入ります。
+  3 ページ (`-12..-1` / `-5..+6` / `+1..+12`) を C ボタンで切り替え、
+  数値タップで即時に `(base + offset)` として転調へ反映されます。
+- スプラッシュ画面は `ShowSplash: false` で省略できます。
