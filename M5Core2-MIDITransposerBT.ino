@@ -449,6 +449,88 @@ void key_callback(uint8_t *p_msg)
     portEXIT_CRITICAL(&g_keyStateMux);
 }
 
+// ---- 起動スプラッシュ "OWAMIDICON" ----
+static void showSplashScreen() {
+  // Mirrors the M5Tab-MIDIXposeFil opening: double frame, deco lines with
+  // corner accent dots, faded title, subtitle, progress bar, footer.
+  // Geometry/font scaled down for the 320×240 panel; animation timing,
+  // fade math, and progress-bar logic match Tab5's drawSplash() 1:1.
+  const int W = SCREEN_WIDTH;
+  const int H = SCREEN_HEIGHT;
+  const int cx = W / 2;
+  const int cy = H / 2;
+
+  M5.Lcd.fillScreen(TFT_BLACK);
+
+  // Double frame (Tab5 used inset 50/54 on 1280×720 → 12/15 here).
+  M5.Lcd.drawRect(12, 12, W - 24, H - 24, 0x2104);
+  M5.Lcd.drawRect(15, 15, W - 30, H - 30, 0x18C3);
+
+  // Decorative lines flanking the title with accent dots at the corners.
+  // Tab5: cy ± 90, length 640. Scaled here: cy ± 30, length 200.
+  const int hlHalf = 100;
+  M5.Lcd.drawFastHLine(cx - hlHalf, cy - 30, hlHalf * 2, 0x39E7);
+  M5.Lcd.drawFastHLine(cx - hlHalf, cy + 30, hlHalf * 2, 0x39E7);
+  M5.Lcd.fillCircle(cx - hlHalf, cy - 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx + hlHalf, cy - 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx - hlHalf, cy + 30, 2, TFT_CYAN);
+  M5.Lcd.fillCircle(cx + hlHalf, cy + 30, 2, TFT_CYAN);
+
+  // Subtitle just above the lower deco line. FSS9 (≈ Tab5's FONT_MED at
+  // half size) — "少し小さく" per request.
+  uiFontSmall();
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.setTextColor(0x8C71, TFT_BLACK);
+  M5.Lcd.drawString("MIDI Transposer - BT Pedal", cx, cy + 18);
+
+  // Footer (analogue of Tab5's FONT_TINY line).
+  M5.Lcd.setTextFont(1);
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setTextColor(0x6B4D, TFT_BLACK);
+  M5.Lcd.drawString("for M5Stack Core2", cx, cy + 66);
+
+  // Progress bar frame (taller than Tab5's 4 px so the 2 px fill is visible).
+  const int pbW = 200;
+  const int pbH = 6;
+  const int pbX = cx - pbW / 2;
+  const int pbY = cy + 50;
+  M5.Lcd.drawRoundRect(pbX, pbY, pbW, pbH, 2, 0x4208);
+
+  const uint32_t totalMs = 3000;
+  const uint32_t startMs = millis();
+
+  uiFontMedium();   // FSSB12 — "少し小さい" analogue of Tab5's FSSB24 title
+  M5.Lcd.setTextDatum(MC_DATUM);
+
+  int lastFill = -1;
+  uint16_t lastTitleCol = 0xFFFE;  // unlikely value, forces first draw
+
+  while (true) {
+    uint32_t e = millis() - startMs;
+    if (e >= totalMs) break;
+
+    // Title fades in over the first 700 ms, holds, then fades out the last 300 ms.
+    uint8_t lum;
+    if (e < 700)                lum = (uint8_t)((uint32_t)255 * e / 700);
+    else if (e > totalMs - 300) lum = (uint8_t)((uint32_t)255 * (totalMs - e) / 300);
+    else                        lum = 255;
+
+    uint16_t tcol = M5.Lcd.color565(lum, lum, lum);
+    if (tcol != lastTitleCol) {
+      M5.Lcd.setTextColor(tcol, TFT_BLACK);
+      M5.Lcd.drawString("OWAMIDICON-Core2", cx, cy - 10);
+      lastTitleCol = tcol;
+    }
+
+    int fill = (int)((uint64_t)(pbW - 4) * e / totalMs);
+    if (fill != lastFill) {
+      if (fill > 0) M5.Lcd.fillRoundRect(pbX + 2, pbY + 2, fill, pbH - 4, 1, TFT_CYAN);
+      lastFill = fill;
+    }
+    delay(16);
+  }
+}
+
 void setup() {
   M5.begin(true, true, true, true);
 
@@ -520,6 +602,7 @@ void setup() {
   }
 
   M5.Lcd.fillScreen(BLACK);
+  showSplashScreen();
   drawInterface();
 
   Serial.println("MIDI Transposer Ready!");
