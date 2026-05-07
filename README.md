@@ -13,6 +13,10 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 `[mem] heap=… psram=… stack_hw=… midi_in=… midi_out=… …` を出力する
 軽量モニタが有効になります。製品ビルドではフラグなしで完全に無効化されます。
 
+### 動作確認済み (2026-05-06)
+
+`-DM5TAB_DIAG` ビルドで Tab5 側の `scripts/test_sequence.py` を MIDI Module2 (Port C, COM4) 構成に当て、6 フェーズ × 60 秒 (passthrough / transpose +5 / filter PB / filter PB+CC / mapper Ch1→Ch2 / mapper Ch1→Ch2 + Ch3 vel halve) で全フェーズ PASS。`[mem] all_min` は暖機後フラットでリーク無し、5 分連続のサスティン MIDI 入力でリブート無し。yesterday's 既知の Serial2 / processMidiInput クラッシュ修正の検証。
+
 ## 概要
 
 入力された MIDI メッセージに対して、次の順序で処理します。

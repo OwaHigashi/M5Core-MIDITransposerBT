@@ -197,7 +197,7 @@
   <h1>M5Core2 MIDI Transposer + MIDI Manager<br>OWAMIDICON</h1>
   <h2>転調機能と MIDI メッセージ管理を一台で行うパフォーマンスツール<br>Programmed by Owa Higashi (おわ/尾和)</h2>
   <div class="meta">
-    Version: 2026-04 / 対応ハード: <b>M5Stack Core2</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b>
+    Version: 2026-05 / 対応ハード: <b>M5Stack Core2</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b>
   </div>
 </header>
 
@@ -222,6 +222,7 @@
     <li><a href="#bypass">BYPASS と ACTIVE</a></li>
     <li><a href="#flow">MIDI 処理の流れ</a></li>
     <li><a href="#serial">PC 連携 (USB シリアル)</a></li>
+    <li><a href="#stability">安定性検証 (2026-05)</a></li>
     <li><a href="#tips">困ったときに</a></li>
   </ol>
 </nav>
@@ -805,6 +806,11 @@
     <tr><td><code>MODE FILTER / MAPPER</code></td><td>MIDI Manager 内のページへ直接ジャンプ</td></tr>
     <tr><td><code>GROUP TRANSPOSE / MIDI</code></td><td>グループを直接指定</td></tr>
     <tr><td><code>SET TRANSPOSE n</code></td><td>転調値を直接設定</td></tr>
+    <tr><td><code>SET FILTER BYPASS 0|1</code></td><td>FILTER 全体を ACTIVE / BYPASS</td></tr>
+    <tr><td><code>SET FILTER ENABLED &lt;n&gt; 0|1</code></td><td>FILTER ルール n を個別 EN/DIS</td></tr>
+    <tr><td><code>SET MAPPER BYPASS 0|1</code></td><td>MAPPER 全体を ACTIVE / BYPASS</td></tr>
+    <tr><td><code>SET MAPPER ENABLED &lt;n&gt; 0|1</code></td><td>MAPPER ルール n を個別 EN/DIS</td></tr>
+    <tr><td><code>LOAD TESTRULES</code></td><td>リグレッション用 既知ルール一括投入 (PB/CC ブロック + Note Ch1→Ch2 / Ch3 vel スケール)</td></tr>
     <tr><td><code>INFO SCREEN</code></td><td>画面サイズ情報を取得</td></tr>
     <tr><td><code>SCREENSHOT PPM</code></td><td>現在画面を PPM 形式で取得</td></tr>
     <tr><td><code>SCREENSHOT RGB888</code></td><td>現在画面を生 RGB888 で取得</td></tr>
@@ -828,9 +834,48 @@ OK SCREENSHOT_DONE
   </div>
 </section>
 
+<!-- ===== Stability ===== -->
+<section id="stability">
+  <h1 class="section-title">16. 安定性検証 (2026-05)</h1>
+  <p>
+    本機 (M5Core2 + MIDI Module2 / Port C, COM4) について、Tab5 側の
+    <code>scripts/test_sequence.py</code> を借用した 6 フェーズ × 60 秒の
+    自動回帰テストを実施しました。
+  </p>
+  <table>
+    <tr><th>フェーズ</th><th>内容</th><th>結果</th></tr>
+    <tr><td>1</td><td>passthrough (FILTER/MAPPER 共に BYPASS)</td><td>PASS</td></tr>
+    <tr><td>2</td><td>transpose +5 (MAPPER は BYPASS)</td><td>PASS</td></tr>
+    <tr><td>3</td><td>FILTER ×1: Pitch Bend ブロック</td><td>PASS</td></tr>
+    <tr><td>4</td><td>FILTER ×2: Pitch Bend + CC ブロック</td><td>PASS</td></tr>
+    <tr><td>5</td><td>MAPPER ×1: Ch1 → Ch2</td><td>PASS</td></tr>
+    <tr><td>6</td><td>MAPPER ×2: Ch1 → Ch2 + Ch3 ベロシティ半減</td><td>PASS</td></tr>
+  </table>
+  <p>
+    <b>判定指標:</b>
+    <code>-DM5TAB_DIAG</code> ビルド時に 5 秒間隔で出力される
+    <code>[mem] heap=… all_min=… stack_hw=… midi_in=… midi_out=…</code>
+    のうち <code>all_min</code> (boot 時から計測した最小空きヒープ)
+    が暖機後フラットになっているかを見ます。
+  </p>
+  <div class="callout tip">
+    <b class="label">結果</b>
+    暖機 1 分以降は <code>all_min</code> がフラット、5 分の連続サスティン MIDI 入力
+    (約 1.18 KB/s) でも再起動・WDT 一切なし。これは前回の Serial2 ringbuffer
+    + processMIDI 100% スピン問題に対する修正の検証になります。
+  </div>
+  <h3>診断ビルドの作り方</h3>
+  <p>
+    <code>arduino-cli compile</code> に <code>--build-property "build.extra_flags=-DM5TAB_DIAG"</code>
+    を追加するだけで有効化できます。<code>[mem]</code> 出力が要らないリリース
+    ビルドではフラグなしでビルドしてください (コンパイル時に空のインライン
+    スタブに置き換わるので残留オーバーヘッドは 0)。
+  </p>
+</section>
+
 <!-- ===== Tips ===== -->
 <section id="tips">
-  <h1 class="section-title">16. 困ったときに</h1>
+  <h1 class="section-title">17. 困ったときに</h1>
 
   <table>
     <tr><th>症状</th><th>確認ポイント</th></tr>
@@ -880,7 +925,7 @@ OK SCREENSHOT_DONE
 </main>
 
 <footer>
-  M5Core2 MIDI Transposer + MIDI Manager &nbsp;/&nbsp; User Manual &nbsp;/&nbsp; 2026-04
+  M5Core2 MIDI Transposer + MIDI Manager &nbsp;/&nbsp; User Manual &nbsp;/&nbsp; 2026-05
 </footer>
 
 </body>
