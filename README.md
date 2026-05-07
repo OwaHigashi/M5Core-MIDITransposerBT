@@ -13,6 +13,10 @@ M5Core2 + M5 Unit MIDI (SAM2695) を使った **MIDI 演奏機 / トランスポ
 `[mem] heap=… psram=… stack_hw=… midi_in=… midi_out=… …` を出力する
 軽量モニタが有効になります。製品ビルドではフラグなしで完全に無効化されます。
 
+### 動作確認済み (2026-05-06)
+
+`-DM5TAB_DIAG` ビルドで Tab5 側の `scripts/test_sequence.py` を Unit MIDI (Port A, COM16) 構成に当て、6 フェーズ × 60 秒 (passthrough / transpose +5 / filter PB / filter PB+CC / mapper Ch1→Ch2 / mapper Ch1→Ch2 + Ch3 vel halve) で全フェーズ PASS。`[mem] all_min` は暖機後フラットでリーク無し。Unit MIDI 経由でも MIDI Module2 経由 (`M5Core2-MIDIXposeFilBT`) でも結果は同等で、Serial2 ringbuffer + `processMIDI()` 100% スピン問題に対する修正の検証になっています。
+
 ## 起動時設定 (`/config.json`)
 
 SD カード直下に `/config.json` を置くと、起動時の挙動を変えられます。  
